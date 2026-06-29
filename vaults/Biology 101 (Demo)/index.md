@@ -1,6 +1,6 @@
 # Index
 
-*First-year college biology: cells, energy, genetics, evolution, and ecology · updated 2026-06-28 · 44 pages*
+*An AI-generated demonstration knowledge base — first-year college biology: cells, energy, genetics, evolution, and ecology · updated 2026-06-28 · 44 pages*
 
 ## Concepts
 

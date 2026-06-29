@@ -3,7 +3,7 @@
 A **vault** is a folder of cross-linked Markdown that Dwell reads. It is
 content-neutral — the reader doesn't care whether it's biology, philosophy, or
 your meeting notes. You can build one with the **Learn** tab, the `cli.py`
-builder, or by hand (the bundled `vaults/biology-101` was hand-authored).
+builder, or by hand (the bundled `vaults/Biology 101 (Demo)` was hand-authored).
 
 ## Directory layout
 
@@ -71,7 +71,7 @@ narrates this prose, so prefer connected sentences over bulleted lists.
 A page tagged `voice` (or named `the-voice-of-…`) is treated as a **narrator
 persona** rather than a readable node. Its body describes how the vault should
 sound; the reader offers it as a selectable voice and uses it as the default.
-See `vaults/biology-101/wiki/syntheses/the-voice-of-the-naturalist.md`.
+See `vaults/Biology 101 (Demo)/wiki/syntheses/the-voice-of-the-naturalist.md`.
 
 ## `_meta/` (generated)
 

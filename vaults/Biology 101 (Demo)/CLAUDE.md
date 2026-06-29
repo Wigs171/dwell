@@ -1,4 +1,4 @@
-# Vault Schema — First-year college biology — cells, energy, genetics, evolution, and ecology
+# Vault Schema — Biology 101 (Demo): an AI-generated demonstration knowledge base on first-year college biology (cells, energy, genetics, evolution, ecology)
 
 This vault holds a compounding knowledge base on **First-year college biology — cells, energy, genetics, evolution, and ecology**, maintained
 incrementally by LLM agents as sources are ingested. Source documents are

@@ -14,7 +14,7 @@ cd web && npm install
 ```
 
 Run the backend and the Vite dev server in two terminals (see the README's
-"Dev mode"). The bundled `vaults/biology-101` vault gives you something to read
+"Dev mode"). The bundled `vaults/Biology 101 (Demo)` vault gives you something to read
 immediately.
 
 ## Before you open a PR

@@ -22,7 +22,7 @@ vaults for you from your own files, links, or a topic, using an agent pipeline.
 | `web/` | The frontend — Svelte 5 + Vite (TypeScript). The reading UI, themes, settings, narration, and the Learn screens. |
 | `compendium/` | The vault engine + ingest agents that **Learn** drives to build vaults. |
 | `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `loop`, `enrich`, `explore`, `split-book`. |
-| `vaults/` | Your knowledge bases. The bundled **`biology-101`** demo lives here. |
+| `vaults/` | Your knowledge bases. The bundled **`Biology 101 (Demo)`** vault lives here. |
 | `docs/` | Design docs and the [vault format spec](docs/VAULT_FORMAT.md). |
 | `tests/` | A smoke test for the server (`dwell_smoke.py`). |
 
@@ -159,8 +159,8 @@ serves in production and proxies to in dev.
 ## License
 
 - **Code:** [Apache-2.0](LICENSE).
-- **Demo vault content** (`vaults/biology-101/`): original material released
-  under [CC BY 4.0](vaults/biology-101/CREDITS.md). Vaults *you* build carry
+- **Demo vault content** (`vaults/Biology 101 (Demo)/`): original material released
+  under [CC BY 4.0](<vaults/Biology 101 (Demo)/CREDITS.md>). Vaults *you* build carry
   whatever license their sources do — that's on you.
 
 ---

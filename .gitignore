@@ -43,7 +43,7 @@ dwell-history.json
 
 # --- user-created vaults: keep ONLY the bundled demo ---
 vaults/*
-!vaults/biology-101/
+!vaults/Biology 101 (Demo)/
 
 # --- OS / editor ---
 .DS_Store
