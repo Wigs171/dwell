@@ -79,6 +79,14 @@ class CompendiumConfig(BaseSettings):
         description="Use the single-call non-REPL ingest agents instead of the RLM-REPL ones.",
     )
 
+    # How many independent page-writes the structured ingest fans out at once
+    # (each page is one LLM call, so they parallelize cleanly). REPL ingest
+    # ignores this — its writes are multi-turn. Env: COMPENDIUM_INGEST_CONCURRENCY.
+    ingest_concurrency: int = Field(
+        default=4,
+        description="Max concurrent page-writes in structured ingest.",
+    )
+
     # Vision / OCR provider (drives pdf figure transcription + view_image)
     vision_provider: str = Field(
         default="anthropic",

@@ -275,11 +275,18 @@ class IngestOrchestrator:
 
         written: list[Page] = []
         write_failures: list[tuple[str, str]] = list(deferred)
-        for idx, change in enumerate(planned):
-            _emit(
-                "write", i=idx + 1, n=len(planned),
-                title=change.title, page_id=change.page_id, op=change.op.value,
-            )
+
+        def _write_one(idx, change, emit_lock=None):
+            """Draft + persist ONE page → (page, failure). Distinct pages are
+            distinct files, so this is safe to run concurrently."""
+            def _e(*a, **k):
+                if emit_lock is None:
+                    _emit(*a, **k)
+                else:
+                    with emit_lock:
+                        _emit(*a, **k)
+            _e("write", i=idx + 1, n=len(planned),
+               title=change.title, page_id=change.page_id, op=change.op.value)
             try:
                 page = self._writer.write(
                     change=change,
@@ -289,11 +296,39 @@ class IngestOrchestrator:
                     sibling_index=index_text,
                 )
                 write_page(self.vault, page)
-                written.append(page)
-                _emit("wrote", page_id=page.id, title=change.title)
+                _e("wrote", page_id=page.id, title=change.title)
+                return page, None
             except Exception as exc:
-                write_failures.append((change.page_id, str(exc)))
-                _emit("write_failed", page_id=change.page_id, error=str(exc)[:160])
+                _e("write_failed", page_id=change.page_id, error=str(exc)[:160])
+                return None, (change.page_id, str(exc))
+
+        # Independent page-writes fan out concurrently in STRUCTURED mode (each
+        # is a single LLM call; the cost tracker is thread-safe and the budget
+        # was already gated above). REPL mode stays sequential — each REPL write
+        # is itself a multi-turn session.
+        concurrency = max(1, int(getattr(self.config, "ingest_concurrency", 1) or 1))
+        if self.structured and concurrency > 1 and len(planned) > 1:
+            import threading
+            from concurrent.futures import ThreadPoolExecutor
+            emit_lock = threading.Lock()
+            results: list = [None] * len(planned)
+            with ThreadPoolExecutor(max_workers=min(concurrency, len(planned))) as ex:
+                futs = {ex.submit(_write_one, i, ch, emit_lock): i
+                        for i, ch in enumerate(planned)}
+                for fut in futs:
+                    results[futs[fut]] = fut.result()
+            for page, fail in results:
+                if page is not None:
+                    written.append(page)
+                if fail is not None:
+                    write_failures.append(fail)
+        else:
+            for idx, change in enumerate(planned):
+                page, fail = _write_one(idx, change)
+                if page is not None:
+                    written.append(page)
+                if fail is not None:
+                    write_failures.append(fail)
 
         # Review (batch)
         _emit("review", n=len(written))

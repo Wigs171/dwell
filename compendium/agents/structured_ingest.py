@@ -174,6 +174,25 @@ def _one_call(
     return (response.content[0].text or "").strip()
 
 
+def _pmap(fn: Callable, items, max_workers: int = 4) -> list:
+    """Run `fn` over `items` concurrently (threads), preserving input order.
+
+    Sequential when there are 0-1 items. The cost tracker is thread-safe, so
+    parallel LLM sub-calls are budget-accounted correctly.
+    """
+    items = list(items)
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    from concurrent.futures import ThreadPoolExecutor
+
+    out: list = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as ex:
+        futs = {ex.submit(fn, x): i for i, x in enumerate(items)}
+        for f in futs:
+            out[futs[f]] = f.result()
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Router — one structured call (or chunked extract → merge for long sources)
 # ---------------------------------------------------------------------------
@@ -348,12 +367,12 @@ class StructuredRouter:
         """
         topic = vault_topic or _read_vault_topic(self._vault) or "(unspecified)"
         chunks = _chunk(source_content)
-        seen: dict[str, dict] = {}
-        for c in chunks:
+
+        def _extract_chunk(c: str) -> dict:
             try:
                 self.cost_tracker.check_budget()
             except Exception:
-                break
+                return {}
             text = _one_call(
                 self.client,
                 self.cost_tracker,
@@ -363,8 +382,11 @@ class StructuredRouter:
                 max_tokens=1500,
                 is_sub_call=True,
             )
-            data = _extract_json(text)
-            for raw in data.get("candidates", []) or []:
+            return _extract_json(text)
+
+        seen: dict[str, dict] = {}
+        for data in _pmap(_extract_chunk, chunks):  # chunk calls run concurrently
+            for raw in (data or {}).get("candidates", []) or []:
                 if not isinstance(raw, dict):
                     continue
                 name = (raw.get("name") or "").strip()
@@ -590,14 +612,17 @@ class StructuredPageWriter:
             return []
 
     def _distill_relevant(self, change: PageChange, source_content: str) -> str:
-        """Chunked map → concat of slices relevant to this page's topic."""
+        """Chunked map → concat of slices relevant to this page's topic.
+
+        Per-chunk slice calls run concurrently; order is preserved.
+        """
         chunks = _chunk(source_content)
-        slices: list[str] = []
-        for c in chunks:
+
+        def _slice_chunk(c: str) -> str:
             try:
                 self.cost_tracker.check_budget()
             except Exception:
-                break
+                return ""
             text = _one_call(
                 self.client,
                 self.cost_tracker,
@@ -607,8 +632,9 @@ class StructuredPageWriter:
                 max_tokens=2000,
                 is_sub_call=True,
             )
-            if text and "N/A" not in text[:8]:
-                slices.append(text)
+            return text if (text and "N/A" not in text[:8]) else ""
+
+        slices = [s for s in _pmap(_slice_chunk, chunks) if s]
         return "\n\n---\n\n".join(slices)
 
 
@@ -861,11 +887,13 @@ def structured_gather(
     saved: list[Path] = []
     used_slugs: set[str] = set()
 
+    # Dedup gate (sequential, registry reads): tombstone first, then URL.
+    to_fetch: list[tuple[str, str]] = []
     for r in ranked:
         url = (r.get("url") or "").strip()
         title = (r.get("title") or url or "Untitled").strip()
-
-        # Dedup gate: tombstone first, then URL.
+        if not url:
+            continue
         try:
             if registry.is_tombstoned(url=url) is not None:
                 _emit("skipped", url=url, reason="tombstoned")
@@ -876,15 +904,25 @@ def structured_gather(
                 continue
         except Exception:
             pass
+        to_fetch.append((url, title))
 
-        _emit("fetch", url=url, title=title)
+    # Fetch pages CONCURRENTLY (I/O-bound). Saves stay sequential so the
+    # registry + file writes never race.
+    _emit("fetch", count=len(to_fetch))
+
+    def _fetch(item: tuple[str, str]):
+        url, title = item
         try:
             body = fetch_url(url)
         except Exception as exc:
-            _emit("fetch_failed", url=url, error=str(exc)[:160])
-            continue
+            return (url, title, None, str(exc)[:160])
         if not body or body.strip().startswith("[FETCH ERROR]"):
-            _emit("fetch_failed", url=url, error=(body or "")[:160])
+            return (url, title, None, (body or "")[:160])
+        return (url, title, body, None)
+
+    for url, title, body, err in _pmap(_fetch, to_fetch):
+        if body is None:
+            _emit("fetch_failed", url=url, error=err or "")
             continue
 
         slug = _unique_slug_in_dir(slugify(title), used_slugs, paths.raw_articles)
