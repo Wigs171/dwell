@@ -46,7 +46,13 @@ class VaultNotInitialized(Exception):
 class IngestOrchestrator:
     """Runs the full Ingest pipeline for a single source."""
 
-    def __init__(self, config: CompendiumConfig, vault: VaultPaths):
+    def __init__(
+        self,
+        config: CompendiumConfig,
+        vault: VaultPaths,
+        *,
+        structured: bool | None = None,
+    ):
         if not vault.is_initialized():
             raise VaultNotInitialized(
                 f"vault at {vault.root} is missing CLAUDE.md; "
@@ -57,28 +63,59 @@ class IngestOrchestrator:
         self.client = config.create_anthropic_client()
         self.cost_tracker = CostTracker(config.get_guardrails())
         tiered = config.tiered_models
-        self._router = IngestRouter(
-            client=self.client,
-            config=config,
-            cost_tracker=self.cost_tracker,
-            vault=vault,
-            tiered=tiered,
-        )
-        self._writer = PageWriter(
-            client=self.client,
-            config=config,
-            cost_tracker=self.cost_tracker,
-            vault=vault,
-            tiered=tiered,
-        )
+
+        # `structured` selects the cheap single-call (non-REPL) Router /
+        # PageWriter / Explorer instead of the recursive-language-model
+        # REPL agents. The REPL path remains the default fallback. The
+        # flag may also come from a config attribute (`structured_ingest`)
+        # so the web "Learn" builds can default it ON via env without a CLI
+        # flag.
+        if structured is None:
+            structured = bool(getattr(config, "structured_ingest", False))
+        self.structured = structured
+
+        if structured:
+            from compendium.agents.structured_ingest import (
+                StructuredExplorer,
+                StructuredPageWriter,
+                StructuredRouter,
+            )
+
+            self._router = StructuredRouter(
+                self.client, config, self.cost_tracker, vault=vault, tiered=tiered
+            )
+            self._writer = StructuredPageWriter(
+                self.client, config, self.cost_tracker, vault=vault, tiered=tiered
+            )
+            self._explorer = StructuredExplorer(
+                self.client, config, self.cost_tracker, vault=vault, tiered=tiered
+            )
+        else:
+            self._router = IngestRouter(
+                client=self.client,
+                config=config,
+                cost_tracker=self.cost_tracker,
+                vault=vault,
+                tiered=tiered,
+            )
+            self._writer = PageWriter(
+                client=self.client,
+                config=config,
+                cost_tracker=self.cost_tracker,
+                vault=vault,
+                tiered=tiered,
+            )
+            self._explorer = Explorer(
+                client=self.client,
+                config=config,
+                cost_tracker=self.cost_tracker,
+                vault=vault,
+            )
+
+        # Reviewer is already a single non-REPL messages.create call —
+        # keep it identical in both modes.
         self._reviewer = Reviewer(
             client=self.client, config=config, cost_tracker=self.cost_tracker
-        )
-        self._explorer = Explorer(
-            client=self.client,
-            config=config,
-            cost_tracker=self.cost_tracker,
-            vault=vault,
         )
 
     def ingest(

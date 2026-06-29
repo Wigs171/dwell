@@ -218,6 +218,21 @@ def _expand_sources(d: Path, sources: list[dict], emit) -> list[dict]:
 # NOT one orchestrator doing everything.
 def _phase_activity(p: dict) -> str | None:
     ph = p.get("phase")
+    # Gather phases (research prompt → cheap non-REPL web gather).
+    if ph == "search":
+        return "Searching the web for your prompt…"
+    if ph == "searched":
+        n = p.get("count", 0)
+        return f"Found {n} source{'' if n == 1 else 's'} · reading…"
+    if ph == "fetch":
+        return "Reading a source…"
+    if ph == "skipped":
+        return None
+    if ph == "gathered":
+        return None
+    if ph == "gather_done":
+        n = p.get("saved", 0)
+        return f"Gathered {n} source{'' if n == 1 else 's'}"
     if ph == "route":
         return "Planner reading the source & mapping pages…"
     if ph == "planned":
@@ -308,8 +323,9 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
         env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
 
     if is_research:
-        # A research prompt → web-research it + the graph's open nodes, then ingest, via a
-        # single loop pass. Needs a search provider (UI store, else .env).
+        # A research prompt → cheap non-REPL gather (web search → fetch → save)
+        # then structured ingest of each source, in one process. Emits @@PROG@@
+        # (gather + ingest phases). Needs a search provider (UI store, else .env).
         from dwell_endpoints import read_search_config, search_available
         sc = read_search_config()
         if sc["provider"] == "jina" and sc["api_key"]:
@@ -322,11 +338,13 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
             emit("log", {"id": s["id"], "line": "[error] No web search provider configured — "
                          "add one in Learn settings → Web search to use a research prompt."})
             return False
-        cmd = [sys.executable, str(CLI), "loop", s["path"], "--vault", vault,
-               "--max-iterations", "1", "--auto", "3", "--no-lint"]
+        cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
+               "--from-prompt", "--allow-skip", "--json-progress"]
+        if not o.auto_explore:
+            cmd += ["--no-explore"]
     else:
         cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
-               "--allow-skip", "--json-progress"]
+               "--structured", "--allow-skip", "--json-progress"]
         if not o.auto_explore:
             cmd += ["--no-explore"]
     if cap is not None:

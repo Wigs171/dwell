@@ -69,6 +69,16 @@ class CompendiumConfig(BaseSettings):
     llm_api_key: str = Field(default="", description="API key for llm_base_url")
     llm_provider: str = Field(default="", description="'anthropic' | 'openai' (auto-detected from URL if blank)")
 
+    # Structured (non-REPL) ingest. When True, the ingest pipeline runs the
+    # single-call StructuredRouter / StructuredPageWriter / StructuredExplorer
+    # instead of the recursive-language-model REPL agents (much cheaper; same
+    # byte-compatible output). The web "Learn" builds default this ON.
+    # Env: COMPENDIUM_STRUCTURED_INGEST=1.
+    structured_ingest: bool = Field(
+        default=False,
+        description="Use the single-call non-REPL ingest agents instead of the RLM-REPL ones.",
+    )
+
     # Vision / OCR provider (drives pdf figure transcription + view_image)
     vision_provider: str = Field(
         default="anthropic",

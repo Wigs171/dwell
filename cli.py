@@ -109,10 +109,19 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    # --from-prompt: `source` is a research PROMPT, not a path. Run the
+    # cheap non-REPL gather, then ingest each saved source via the
+    # structured pipeline. Implies --structured.
+    if getattr(args, "from_prompt", False):
+        _cmd_ingest_from_prompt(args, config, paths)
+        return
+
     orch = None
     if not args.extract_only:
         try:
-            orch = IngestOrchestrator(config, paths)
+            orch = IngestOrchestrator(
+                config, paths, structured=getattr(args, "structured", False) or None
+            )
         except VaultNotInitialized as exc:
             console.print(f"[red]{exc}[/red]")
             sys.exit(1)
@@ -201,6 +210,130 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         if len(warn_issues) > 10:
             console.print(f"  ...and {len(warn_issues) - 10} more")
     console.print(f"\n[dim]Cost: ${report.cost_dollars:.4f}[/dim]")
+
+
+def _cmd_ingest_from_prompt(args, config, paths) -> None:
+    """`ingest --from-prompt`: gather sources from a research prompt, then
+    ingest each via the structured pipeline. Headless and cheap (no REPL).
+
+    Emits the SAME `@@PROG@@{json}` lines as `cmd_ingest` under
+    `--json-progress`, with extra gather phases (search / searched /
+    gathered / gather_done) so a UI can follow the web-research portion.
+    """
+    import json as _json
+
+    from compendium.agents.ingest_orchestrator import (
+        IngestOrchestrator,
+        VaultNotInitialized,
+    )
+    from compendium.agents.structured_ingest import structured_gather
+    from compendium.models import ReviewSeverity
+    from compendium.vault import IngestRegistry, append_entry
+
+    if not config.has_auth:
+        console.print(
+            "[red]No API key found.[/red] Set ANTHROPIC_API_KEY in env or .env."
+        )
+        sys.exit(1)
+    has_jina = bool(getattr(config, "jina_api_key", None))
+    if config.search_provider == "none" and not has_jina:
+        console.print(
+            "[yellow]Warning: no search provider configured.[/yellow] "
+            "--from-prompt requires web_search — set COMPENDIUM_SEARCH_PROVIDER "
+            "(tavily, brave, or jina) and the matching key."
+        )
+        if not args.allow_skip:
+            sys.exit(1)
+
+    progress = None
+    if args.json_progress:
+        def progress(phase: str, payload: dict) -> None:
+            sys.stdout.write("@@PROG@@" + _json.dumps({"phase": phase, **payload}) + "\n")
+            sys.stdout.flush()
+
+    # Structured orchestrator (forced on for --from-prompt).
+    try:
+        orch = IngestOrchestrator(config, paths, structured=True)
+    except VaultNotInitialized as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    prompt = args.source
+    console.print(f"[cyan]Gathering sources for prompt[/cyan] '[bold]{prompt}[/bold]'")
+    registry = IngestRegistry(paths)
+    # Share the orchestrator's cost tracker so gather + ingest spend is unified.
+
+    def _gather_progress(phase: str, payload: dict) -> None:
+        if progress is not None:
+            try:
+                s = orch.cost_tracker.get_summary()
+                progress(phase, {**payload, "cost": s["estimated_cost_usd"]})
+            except Exception:
+                progress(phase, payload)
+
+    try:
+        saved = structured_gather(
+            config, paths, prompt, registry,
+            progress=_gather_progress if progress else None,
+        )
+    except Exception as exc:
+        console.print(f"[red]Gather failed: {exc}[/red]")
+        sys.exit(1)
+
+    if not saved:
+        console.print("[yellow]No sources gathered for that prompt.[/yellow]")
+        # Not a hard failure under --allow-skip (parity with dedup-skip).
+        sys.exit(0 if args.allow_skip else 1)
+
+    console.print(
+        f"\n[bold green]{len(saved)} source"
+        f"{'s' if len(saved) != 1 else ''} gathered → raw/articles/[/bold green]"
+    )
+    log_body = [f"- prompt: {prompt}"]
+    for p in saved:
+        console.print(f"  - [cyan]{p.name}[/cyan]")
+        log_body.append(f"- gathered: `{p.as_posix()}`")
+    append_entry(paths, op="gather", subject=prompt[:80], body="\n".join(log_body))
+
+    # Ingest each gathered source via the structured pipeline. Skip
+    # per-source explore (run one consolidated explore at the end).
+    total_created = 0
+    total_updated = 0
+    total_issues = 0
+    for p in saved:
+        try:
+            report = orch.ingest(p, progress=progress, run_explore=False)
+        except Exception as exc:
+            console.print(f"  [red]FAILED[/red] {p.name}: {exc}")
+            continue
+        total_created += len(report.pages_created)
+        total_updated += len(report.pages_updated)
+        total_issues += sum(
+            1 for i in report.review_issues if i.severity != ReviewSeverity.INFO
+        )
+        console.print(
+            f"  [green]✓[/green] {p.name} → "
+            f"{len(report.pages_created)} created · "
+            f"{len(report.pages_updated)} updated"
+        )
+
+    if not args.no_explore:
+        try:
+            exp = orch._explorer.explore()
+            console.print(
+                f"\n[green]explore[/green]: {len(exp.proposals)} proposals → "
+                f"[cyan]wiki/_meta/expansion.md[/cyan]"
+            )
+        except Exception as exc:
+            console.print(f"\n[yellow]explore failed: {exc}[/yellow]")
+
+    total_cost = orch.cost_tracker.get_summary()["estimated_cost_usd"]
+    console.print(
+        f"\n[bold]totals:[/bold] [green]{total_created}[/green] created · "
+        f"[yellow]{total_updated}[/yellow] updated · "
+        f"[red]{total_issues}[/red] review issues"
+    )
+    console.print(f"[dim]Cost: ${total_cost:.4f}[/dim]")
 
 
 def _read_topic(paths) -> str:
@@ -1805,6 +1938,21 @@ def main() -> None:
         "Router/PageWriter pass entirely. Useful for batch-extracting "
         "source markdown via Gemma vision without spending on Claude. "
         "Re-run without the flag (or use loop --resume) to ingest later.",
+    )
+    p_ingest.add_argument(
+        "--structured", action="store_true",
+        help="Use the single-call non-REPL ingest agents (StructuredRouter / "
+        "StructuredPageWriter / StructuredExplorer) instead of the RLM-REPL "
+        "ones. Much cheaper; byte-compatible output. The web Learn builds "
+        "default this on.",
+    )
+    p_ingest.add_argument(
+        "--from-prompt", action="store_true",
+        help="Treat `source` as a research PROMPT rather than a file/URL: "
+        "run the cheap non-REPL gather (web search → fetch → save sources), "
+        "then ingest each saved source via the structured pipeline. Implies "
+        "--structured. Emits @@PROG@@ phases (search/gathered) under "
+        "--json-progress.",
     )
     p_ingest.set_defaults(func=cmd_ingest)
 
