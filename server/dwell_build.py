@@ -93,6 +93,13 @@ def _build_sources(d: Path) -> list[dict]:
     for l in src["links"]:
         out.append({"id": l["id"], "name": l["name"], "kind": "link",
                     "path": l["name"], "status": "queued"})
+    # A research prompt is buildable work too: web-research it + the graph's open nodes,
+    # then ingest. Always queued (never a duplicate — it's re-runnable).
+    prompt = (src.get("prompt") or "").strip()
+    if prompt:
+        label = prompt if len(prompt) <= 60 else prompt[:57] + "…"
+        out.append({"id": "research", "name": label, "kind": "research",
+                    "path": prompt, "status": "queued"})
     return out
 
 
@@ -232,10 +239,27 @@ def _phase_activity(p: dict) -> str | None:
 
 
 def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool:
+    is_research = s.get("kind") == "research"
     if dry:
+        if is_research:
+            sim = [("Searching the web for your prompt…", 0.0),
+                   ("Found 4 sources · reading…", 0.01),
+                   ("Exploring the graph's open nodes…", 0.02),
+                   ("Writing 3 new pages…", 0.04),
+                   ("Finished · 3 created", 0.05)]
+            cur = 0.0
+            for act, c in sim:
+                if state.cancel:
+                    return False
+                cur = c
+                emit("progress", {"id": s["id"], "phase": "research", "activity": act, "cost": cur})
+                emit("cost", {"total": round(state.cost + cur, 4), "source": round(cur, 4)})
+                time.sleep(0.4)
+            state.cost = round(state.cost + cur, 4)
+            return True
         # Simulate the orchestrator's phase stream so the UI (activity line + cost
         # ticker) can be verified end-to-end without spending on the API.
-        sim = [
+        sim2 = [
             ("route", {"msg": "Reading the source and planning pages", "cost": 0.0}),
             ("planned", {"pages": 3, "titles": ["First Concept", "Second Concept", "A Synthesis"], "cost": 0.004}),
             ("write", {"i": 1, "n": 3, "title": "First Concept", "cost": 0.012}),
@@ -247,7 +271,7 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
             ("done", {"created": 3, "updated": 0, "cost": 0.041}),
         ]
         cur = 0.0
-        for phase, payload in sim:
+        for phase, payload in sim2:
             if state.cancel:
                 return False
             payload = {"phase": phase, **payload}
@@ -261,25 +285,11 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
         return True
 
     o = state.opts
-    cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
-           "--allow-skip", "--json-progress"]
     # Per-source cap, never letting one source exceed what remains under the total cap.
     cap = o.max_cost
     if o.total_cap is not None:
         remaining = max(0.0, o.total_cap - state.cost)
         cap = remaining if cap is None else min(cap, remaining)
-    if cap is not None:
-        cmd += ["--max-cost", str(round(cap, 4))]
-    if o.model_orchestrator:
-        cmd += ["--model-strategic", o.model_orchestrator]
-    if o.model_writer:
-        cmd += ["--model-synthesis", o.model_writer]
-    if o.model_mechanical:
-        cmd += ["--model-mechanical", o.model_mechanical]
-    if not o.auto_explore:
-        cmd += ["--no-explore"]
-    # stdin=DEVNULL so the child can never block on an inherited stdin handle;
-    # unbuffered so its progress streams to us live.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     if o.max_pages:
         env["COMPENDIUM_MAX_PAGES_PER_INGEST"] = str(int(o.max_pages))
@@ -293,6 +303,40 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
             env["COMPENDIUM_LLM_BASE_URL"] = ep["base_url"]
             env["COMPENDIUM_LLM_API_KEY"] = ep.get("api_key", "")
             env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
+
+    if is_research:
+        # A research prompt → web-research it + the graph's open nodes, then ingest, via a
+        # single loop pass. Needs a search provider (UI store, else .env).
+        from dwell_endpoints import read_search_config, search_available
+        sc = read_search_config()
+        if sc["provider"] == "jina" and sc["api_key"]:
+            # Jina = its own key (Jina Search fallback + Reader); not a search_provider.
+            env["JINA_API_KEY"] = sc["api_key"]
+        elif sc["provider"] in ("tavily", "brave") and sc["api_key"]:
+            env["COMPENDIUM_SEARCH_PROVIDER"] = sc["provider"]
+            env["COMPENDIUM_SEARCH_API_KEY"] = sc["api_key"]
+        elif not search_available():
+            emit("log", {"id": s["id"], "line": "[error] No web search provider configured — "
+                         "add one in Learn settings → Web search to use a research prompt."})
+            return False
+        cmd = [sys.executable, str(CLI), "loop", s["path"], "--vault", vault,
+               "--max-iterations", "1", "--auto", "3", "--no-lint"]
+    else:
+        cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
+               "--allow-skip", "--json-progress"]
+        if not o.auto_explore:
+            cmd += ["--no-explore"]
+    if cap is not None:
+        cmd += ["--max-cost", str(round(cap, 4))]
+    if o.model_orchestrator:
+        cmd += ["--model-strategic", o.model_orchestrator]
+    if o.model_writer:
+        cmd += ["--model-synthesis", o.model_writer]
+    if o.model_mechanical:
+        cmd += ["--model-mechanical", o.model_mechanical]
+
+    # stdin=DEVNULL so the child can never block on an inherited stdin handle;
+    # unbuffered so its progress streams to us live.
     state.proc = subprocess.Popen(
         cmd, cwd=str(REPO), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -303,7 +347,7 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
             line = line.rstrip()
             if not line:
                 continue
-            if line.startswith("@@PROG@@"):            # a structured phase event
+            if line.startswith("@@PROG@@"):            # a structured phase event (ingest)
                 try:
                     p = json.loads(line[len("@@PROG@@"):])
                 except Exception:
@@ -317,6 +361,11 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
                 emit("cost", {"total": round(state.cost + cur_cost, 4), "source": round(cur_cost, 4)})
             else:                                       # raw console chatter
                 emit("log", {"id": s["id"], "line": line[:300]})
+                if is_research:                         # loop has no @@PROG@@ — scrape its cost line
+                    m = re.search(r"\$([0-9]+\.[0-9]{2,})", line)
+                    if m:
+                        cur_cost = float(m.group(1))
+                        emit("cost", {"total": round(state.cost + cur_cost, 4), "source": round(cur_cost, 4)})
         state.proc.wait()
         rc = state.proc.returncode
     finally:

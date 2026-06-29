@@ -202,3 +202,72 @@ def clear_mercury() -> dict:
     except FileNotFoundError:
         pass
     return {"has_key": False}
+
+
+# ---- web search provider — powers research-prompt builds (cli.py loop) ----------------
+# Tavily or Brave + key. Stored locally; the key never leaves the server. Falls back to
+# COMPENDIUM_SEARCH_PROVIDER / _API_KEY in .env when unset.
+_SEARCH_STORE = VAULT_ROOT / ".dwell-search.json"
+search_router = APIRouter(prefix="/search", tags=["search"])
+# tavily/brave are true search providers; jina is a key (Jina Search + Reader, r.jina.ai —
+# good for JS/GitHub pages) that the loop falls back to when no provider is set.
+_SEARCH_PROVIDERS = ("tavily", "brave", "jina")
+
+
+def read_search_config() -> dict:
+    """The user-set {provider, api_key} (empty strings if none) — for internal use only."""
+    try:
+        d = json.loads(_SEARCH_STORE.read_text(encoding="utf-8"))
+        return {"provider": (d.get("provider") or "").strip(), "api_key": (d.get("api_key") or "").strip()}
+    except Exception:
+        return {"provider": "", "api_key": ""}
+
+
+def search_available() -> bool:
+    """Whether research can run — a stored provider+key, OR whatever the pipeline itself
+    resolves from .env (compendium.config reads the .env the loop subprocess will use)."""
+    c = read_search_config()
+    if c["provider"] and c["api_key"]:
+        return True
+    try:
+        from compendium.config import CompendiumConfig
+        # The loop subprocess runs from the repo root, so resolve .env there (not the
+        # server's cwd) to match exactly what the pipeline will actually see.
+        env_file = Path(__file__).resolve().parent.parent / ".env"
+        cfg = CompendiumConfig(_env_file=str(env_file)) if env_file.exists() else CompendiumConfig()
+        return (cfg.search_provider or "none") not in ("", "none") or bool(cfg.jina_api_key)
+    except Exception:
+        return False
+
+
+class SearchIn(BaseModel):
+    provider: str
+    api_key: str
+
+
+@search_router.get("")
+def get_search() -> dict:
+    c = read_search_config()
+    return {"provider": c["provider"], "has_key": bool(c["api_key"]),
+            "providers": list(_SEARCH_PROVIDERS), "available": search_available()}
+
+
+@search_router.put("")
+def set_search(req: SearchIn) -> dict:
+    prov = (req.provider or "").strip().lower()
+    if prov not in _SEARCH_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"provider must be one of {_SEARCH_PROVIDERS}")
+    VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = _SEARCH_STORE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"provider": prov, "api_key": (req.api_key or "").strip()}), encoding="utf-8")
+    os.replace(tmp, _SEARCH_STORE)
+    return get_search()
+
+
+@search_router.delete("")
+def clear_search() -> dict:
+    try:
+        _SEARCH_STORE.unlink()
+    except FileNotFoundError:
+        pass
+    return get_search()

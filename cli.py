@@ -784,6 +784,602 @@ def cmd_research(args: argparse.Namespace) -> None:
     console.print(f"[dim]Cost: ${total_cost:.4f}[/dim]")
 
 
+def cmd_loop(args: argparse.Namespace) -> None:
+    """The autonomous research loop: research → ingest → (lint) → explore → select → repeat."""
+    from collections import deque
+
+    from compendium.agents.explorer import Explorer
+    from compendium.agents.ingest_orchestrator import (
+        IngestOrchestrator,
+        VaultNotInitialized,
+    )
+    from compendium.agents.linter import Linter
+    from compendium.agents.research_agent import ResearchAgent
+    from compendium.config import CompendiumConfig
+    from compendium.guardrails.cost_tracker import BudgetExceeded
+    from compendium.models import ExpansionKind, ExpansionProposal
+    from compendium.vault import VaultPaths, append_entry
+    from compendium.vault.loop_state import LoopSession, load as load_loop_state
+
+    paths = VaultPaths.for_vault(args.vault)
+    if not paths.is_initialized():
+        console.print(
+            f"[red]Vault at {paths.root} is not initialized[/red] "
+            "(no CLAUDE.md). Run `compendium init` first."
+        )
+        sys.exit(1)
+
+    config = CompendiumConfig()
+    if args.max_cost is not None:
+        config.max_cost_dollars = args.max_cost
+    if args.model_strategic:
+        config.model_strategic = args.model_strategic
+    if args.model_synthesis:
+        config.model_synthesis = args.model_synthesis
+    if args.model_mechanical:
+        config.model_mechanical = args.model_mechanical
+    if not config.has_auth:
+        console.print(
+            "[red]No API key found.[/red] Set ANTHROPIC_API_KEY in env or .env."
+        )
+        sys.exit(1)
+    if config.search_provider == "none" and not config.jina_api_key:
+        console.print(
+            "[red]`loop` requires a search provider[/red] "
+            "(set COMPENDIUM_SEARCH_PROVIDER=tavily|brave + "
+            "COMPENDIUM_SEARCH_API_KEY, or a JINA_API_KEY). The loop can't research without it."
+        )
+        sys.exit(1)
+
+    try:
+        orch = IngestOrchestrator(config, paths)
+    except VaultNotInitialized as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    # All agents share a single cost tracker so --max-cost is a genuine total cap.
+    cost_tracker = orch.cost_tracker
+    researcher = ResearchAgent(
+        client=orch.client, config=config, cost_tracker=cost_tracker,
+        vault=paths, tiered=config.tiered_models,
+    )
+    explorer = Explorer(orch.client, config, cost_tracker, paths)
+    linter = Linter(orch.client, config, cost_tracker, paths)
+
+    interactive = args.interactive
+    auto_n = args.auto
+    max_iters = args.max_iterations
+    include_lint = not args.no_lint
+
+    # Decide seed vs. resume. `--resume` loads the persisted queue and
+    # seen set from `<vault>/.loop-state.json` and continues where a
+    # prior session left off. Without --resume, a seed topic is required.
+    persisted = load_loop_state(paths)
+    resume = args.resume
+    seed_topic = args.topic or ""
+    if not resume and not seed_topic:
+        console.print(
+            "[red]Pass a seed topic OR use [bold]--resume[/bold].[/red] "
+            f"({len(persisted.queue)} pending proposal"
+            f"{'s' if len(persisted.queue) != 1 else ''} in persisted state.)"
+        )
+        sys.exit(1)
+    if resume and not persisted.queue:
+        console.print(
+            "[yellow]--resume given but persisted queue is empty.[/yellow] "
+            "Run `explore` to refresh proposals, or pass a seed topic."
+        )
+        sys.exit(1)
+
+    unlimited_iters = max_iters <= 0
+
+    with LoopSession(paths, seed_topic=seed_topic) as sess:
+        # Seed path: prepend the seed as a synthetic proposal (with
+        # rationale + related pages) so the research agent receives it
+        # with the same context shape as any Explorer proposal.
+        if not resume:
+            if _norm_topic(seed_topic) not in sess.state.seen:
+                seed_proposal = ExpansionProposal(
+                    kind=ExpansionKind.GAP,
+                    title=seed_topic,
+                    priority=1,
+                    signal="user-provided seed topic (no mechanical signal)",
+                    rationale=(
+                        "Seed topic for this loop run. Treat as broad "
+                        "orientation: survey the landscape, surface 2-5 "
+                        "focused sources, and emphasize sources the vault's "
+                        "existing index does not yet cover. Later iterations "
+                        "will target specific expansion proposals."
+                    ),
+                    related=[],
+                )
+                sess.state.queue.insert(0, seed_proposal)
+                sess.state.seen.add(_norm_topic(seed_topic))
+                sess.save_snapshot()
+
+        topic_queue: deque[ExpansionProposal] = deque(sess.state.queue)
+        seen_topics: set[str] = set(sess.state.seen)
+
+        _loop_banner(
+            console,
+            seed_topic or "(resume)",
+            0 if unlimited_iters else max_iters,
+            config.max_cost_dollars,
+            interactive,
+            cumulative_cost=sess.state.cumulative_cost(),
+            cumulative_pages=sess.state.cumulative_pages(),
+            queue_size=len(topic_queue),
+        )
+
+        # Surface backlog count on every resume so deferred pages don't
+        # linger invisibly. Paying Writer cost to drain them is typically
+        # cheaper than paying Router cost again to re-plan.
+        try:
+            from compendium.vault import PageBacklog as _PBL
+            _bl_count = _PBL(paths).count()
+            if _bl_count:
+                console.print(
+                    f"\n[yellow]backlog: {_bl_count} deferred page"
+                    f"{'s' if _bl_count != 1 else ''}[/yellow] "
+                    "— consider "
+                    f"[cyan]cli.py flush-backlog --vault {paths.root}[/cyan] "
+                    "before this iter (cheaper than research+ingest).\n"
+                )
+        except Exception:
+            pass
+
+        # Lifetime cost warning: the per-session budget is reset on every
+        # --resume, so a topic can silently accumulate $60+ across sessions.
+        # `COMPENDIUM_VAULT_LIFETIME_CAP=50` (or the YAML equivalent) raises
+        # a clear warning once sum-of-sessions crosses the cap. Advisory,
+        # not blocking — user can override by acknowledging.
+        lifetime_cap = getattr(config, "vault_lifetime_cap", 0.0) or 0.0
+        if lifetime_cap > 0:
+            lifetime_spent = sess.state.cumulative_cost()
+            projected = lifetime_spent + (config.max_cost_dollars or 0.0)
+            if lifetime_spent >= lifetime_cap:
+                console.print(
+                    f"\n[bold red]⚠ lifetime cap reached[/bold red] "
+                    f"(spent ${lifetime_spent:.2f} ≥ cap ${lifetime_cap:.2f}). "
+                    f"Session will still run with its own budget cap — but "
+                    "reconsider before another resume. Raise "
+                    "COMPENDIUM_VAULT_LIFETIME_CAP to dismiss.\n"
+                )
+            elif projected >= lifetime_cap:
+                console.print(
+                    f"\n[yellow]⚠ this session will likely cross the lifetime "
+                    f"cap[/yellow] (spent ${lifetime_spent:.2f} + budget "
+                    f"${config.max_cost_dollars:.2f} = ~${projected:.2f} vs "
+                    f"cap ${lifetime_cap:.2f})\n"
+                )
+        append_entry(
+            paths,
+            op="loop-resume" if resume else "loop-start",
+            subject=(seed_topic or f"resume ({len(topic_queue)} pending)")[:80],
+            body=(
+                f"- seed topic: {seed_topic or '(resume)'}\n"
+                f"- max iterations: {'unlimited' if unlimited_iters else max_iters}\n"
+                f"- budget: ${config.max_cost_dollars:.2f}\n"
+                f"- persisted queue at start: {len(topic_queue)}\n"
+                f"- cumulative cost across sessions: "
+                f"${sess.state.cumulative_cost():.4f}"
+            ),
+        )
+
+        iteration = 0
+        pages_created_total = 0
+        try:
+            while topic_queue and (unlimited_iters or iteration < max_iters):
+                current_proposal = topic_queue.popleft()
+                current_topic = current_proposal.title
+                iteration += 1
+                iters_label = "∞" if unlimited_iters else str(max_iters)
+                console.rule(
+                    f"[bold magenta]iter {iteration}/{iters_label} — "
+                    f"[{current_proposal.kind.value} p{current_proposal.priority}] "
+                    f"{current_topic}[/bold magenta]"
+                )
+                if (
+                    current_proposal.rationale
+                    and current_proposal.kind != ExpansionKind.GAP
+                ):
+                    console.print(
+                        f"  [dim]rationale:[/dim] {current_proposal.rationale}"
+                    )
+                if current_proposal.related:
+                    console.print(
+                        f"  [dim]related pages:[/dim] "
+                        + ", ".join(
+                            f"[cyan]{r}[/cyan]"
+                            for r in current_proposal.related[:6]
+                        )
+                    )
+
+                expansion_doc_text = _read_expansion_doc(paths)
+
+                # Research
+                try:
+                    research = researcher.research(
+                        current_topic,
+                        proposal=current_proposal,
+                        expansion_doc_text=expansion_doc_text,
+                    )
+                except Exception as exc:
+                    console.print(f"[red]research failed: {exc}[/red]")
+                    sess.state.queue = list(topic_queue)
+                    sess.state.seen = set(seen_topics)
+                    sess.save_snapshot()
+                    continue
+                if not research.sources:
+                    console.print(
+                        "[yellow]research produced no sources; moving on.[/yellow]"
+                    )
+                    sess.state.queue = list(topic_queue)
+                    sess.state.seen = set(seen_topics)
+                    sess.save_snapshot()
+                    continue
+                console.print(
+                    f"  [green]{len(research.sources)}[/green] source file"
+                    f"{'s' if len(research.sources) != 1 else ''} written"
+                )
+
+                # Ingest each source
+                for path in research.raw_paths:
+                    try:
+                        report = orch.ingest(path, run_explore=False)
+                    except Exception as exc:
+                        console.print(
+                            f"  [red]ingest {path.name} failed: {exc}[/red]"
+                        )
+                        continue
+                    pages_created_total += len(report.pages_created)
+                    console.print(
+                        f"    [dim]{path.name}: +{len(report.pages_created)} pages, "
+                        f"~{len(report.pages_updated)} updates, "
+                        f"${report.cost_dollars:.3f} total[/dim]"
+                    )
+
+                # Lint (skip on first iter when cumulative iters also == 1)
+                lint_report_for_mend = None
+                if include_lint and (
+                    sess.iteration_count + iteration > 1 or resume
+                ):
+                    try:
+                        lint_report_for_mend = linter.lint()
+                        real_contradictions = [
+                            c for c in lint_report_for_mend.contradictions if c.pages
+                        ]
+                        console.print(
+                            f"  [dim]lint: {len(lint_report_for_mend.orphan_pages)} orphans, "
+                            f"{len(real_contradictions)} contradictions, "
+                            f"{lint_report_for_mend.citations_unverified} unverified "
+                            f"citations[/dim]"
+                        )
+                    except Exception as exc:
+                        console.print(f"  [yellow]lint failed: {exc}[/yellow]")
+
+                # Mend (tier 1 + 2) — fix what Lint found AND produce
+                # escalation signals for the Explorer call that follows.
+                # Tier 3 stays out of the loop — it's PageWriter-cost per
+                # page and would compound the ingest bill. Call the
+                # standalone `mend` command for that.
+                if lint_report_for_mend is not None:
+                    try:
+                        from compendium.agents.mender import MendConfig, mend_vault
+
+                        mend_report = mend_vault(
+                            client=orch.client,
+                            config=config,
+                            cost_tracker=cost_tracker,
+                            vault=paths,
+                            lint_report=lint_report_for_mend,
+                            mend_config=MendConfig(
+                                tiers={1, 2},
+                                dry_run=False,
+                                max_tier2_issues=20,
+                            ),
+                        )
+                        if mend_report.actions:
+                            console.print(
+                                f"  [dim]mend: {len(mend_report.actions)} "
+                                f"action{'s' if len(mend_report.actions) != 1 else ''}, "
+                                f"${mend_report.cost_dollars:.3f}[/dim]"
+                            )
+                    except BudgetExceeded as exc:
+                        console.print(
+                            f"  [yellow]mend halted at budget: {exc}[/yellow]"
+                        )
+                        raise  # propagate so the loop's BudgetExceeded handler fires
+                    except Exception as exc:
+                        console.print(f"  [yellow]mend failed: {exc}[/yellow]")
+
+                # Explore
+                try:
+                    exp_report = explorer.explore()
+                except Exception as exc:
+                    console.print(f"[yellow]explore failed: {exc}[/yellow]")
+                    break
+
+                # Select next proposals
+                next_proposals = _select_next_topics(
+                    exp_report,
+                    interactive=interactive,
+                    auto_n=auto_n,
+                    seen=seen_topics,
+                )
+                for p in next_proposals:
+                    topic_queue.append(p)
+                    seen_topics.add(_norm_topic(p.title))
+                if next_proposals:
+                    console.print(
+                        f"  [cyan]queued {len(next_proposals)} proposal"
+                        f"{'s' if len(next_proposals) != 1 else ''} "
+                        f"({len(topic_queue)} total pending):[/cyan]"
+                    )
+                    for p in next_proposals:
+                        console.print(
+                            f"    - [magenta]p{p.priority}[/magenta] "
+                            f"[yellow]{p.kind.value}[/yellow] {p.title}"
+                        )
+                elif not topic_queue:
+                    console.print(
+                        "  [bold yellow]no more research-worthy "
+                        "proposals; converged[/bold yellow]"
+                    )
+
+                # Snapshot state after every completed iteration so a
+                # crash or stop doesn't lose pending work.
+                sess.iteration_count = iteration
+                sess.session_pages = pages_created_total
+                sess.session_cost = cost_tracker.get_summary()["estimated_cost_usd"]
+                sess.state.queue = list(topic_queue)
+                sess.state.seen = set(seen_topics)
+                # Bound the persisted queue so it doesn't grow unbounded
+                # across many sessions — Explorer re-surfaces anything
+                # still relevant on its next run anyway.
+                dropped = sess.state.trim_queue()
+                if dropped:
+                    console.print(
+                        f"  [dim]queue trimmed: dropped {dropped} lower-"
+                        f"priority proposal{'s' if dropped != 1 else ''} "
+                        f"(cap {len(sess.state.queue)})[/dim]"
+                    )
+                    # Reflect trim into the live deque so next iter doesn't
+                    # pull from items already dropped.
+                    topic_queue = deque(sess.state.queue)
+                sess.save_snapshot()
+
+                if not topic_queue:
+                    sess.terminated_by = "convergence"
+                    break
+
+            else:
+                # Hit the iter cap with queue still non-empty
+                if not unlimited_iters and topic_queue:
+                    sess.terminated_by = "iters_cap"
+
+        except BudgetExceeded as exc:
+            console.print(f"\n[red]Budget exceeded: {exc}[/red]")
+            sess.terminated_by = "budget"
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Loop interrupted by user.[/yellow]")
+            sess.terminated_by = "signal"
+            raise  # let LoopSession's __exit__ save before re-raising
+
+        # Guaranteed end-of-session explore: expansion.md is the
+        # "what's next" snapshot for this vault. If the per-iteration
+        # explore failed (budget exhaust, convergence-before-explore,
+        # exception) the document is stale — still proposing things
+        # we just built. A dedicated budget reserve lets this pass
+        # run even after BudgetExceeded fires on the main tracker.
+        _run_final_explore_if_stale(
+            explorer=explorer,
+            paths=paths,
+            cost_tracker=cost_tracker,
+            session_started=sess._started,
+            console=console,
+            reserve_dollars=0.50,
+        )
+
+        # Finalize session counters
+        sess.iteration_count = iteration
+        sess.session_pages = pages_created_total
+        sess.session_cost = cost_tracker.get_summary()["estimated_cost_usd"]
+        sess.state.queue = list(topic_queue)
+        sess.state.seen = set(seen_topics)
+        sess.save_snapshot()
+
+        session_cost = sess.session_cost
+        cumulative_after = sess.state.cumulative_cost() + session_cost  # session record not yet appended
+        console.rule(
+            f"[bold green]loop session complete — {iteration} iteration(s)[/bold green]"
+        )
+        console.print(
+            f"  pages created this session: [green]{pages_created_total}[/green] · "
+            f"session cost: [bold]${session_cost:.4f}[/bold]"
+        )
+        console.print(
+            f"  queue remaining: [yellow]{len(topic_queue)}[/yellow] · "
+            f"total across all sessions: "
+            f"[bold]${cumulative_after:.4f}[/bold] / "
+            f"{sess.state.cumulative_pages() + pages_created_total} pages / "
+            f"{sess.state.cumulative_iterations() + iteration} iterations"
+        )
+        if topic_queue:
+            console.print(
+                "  [dim]resume later with[/dim] "
+                f"[cyan]python cli.py loop --resume --vault {paths.root}[/cyan]"
+            )
+        append_entry(
+            paths, op="loop-end", subject=(seed_topic or "resume")[:80],
+            body=(
+                f"- iterations this session: {iteration}\n"
+                f"- pages this session: {pages_created_total}\n"
+                f"- session cost: ${session_cost:.4f}\n"
+                f"- queue remaining: {len(topic_queue)}\n"
+                f"- terminated_by: {sess.terminated_by}"
+            ),
+        )
+
+
+def _run_final_explore_if_stale(
+    *,
+    explorer,
+    paths,
+    cost_tracker,
+    session_started: str,
+    console,
+    reserve_dollars: float = 0.50,
+) -> None:
+    """Re-run explore at session end if expansion.md wasn't refreshed.
+
+    The per-iteration explore can fail (budget exhaust, exception) and
+    silently leave `wiki/_meta/expansion.md` pre-dating the new pages.
+    That makes the vault's "what's next" snapshot wrong until the next
+    session. This function detects the stale case (missing file, or
+    mtime < session-start) and runs one more explore with a temporary
+    `reserve_dollars` budget bump so it can execute even after the
+    main budget was exceeded.
+
+    Best-effort: if the fallback explore also fails (e.g., API outage),
+    we log and continue — the session still ends cleanly.
+    """
+    from datetime import datetime
+    try:
+        session_start_dt = datetime.fromisoformat(session_started)
+    except ValueError:
+        session_start_dt = None
+    expansion_md = paths.meta / "expansion.md"
+
+    needs_refresh = True
+    if expansion_md.exists() and session_start_dt is not None:
+        mtime = datetime.fromtimestamp(expansion_md.stat().st_mtime)
+        if mtime > session_start_dt:
+            needs_refresh = False
+
+    if not needs_refresh:
+        return
+
+    # Temporarily lift the budget ceiling so explore can complete even
+    # if the main work already hit BudgetExceeded. We mutate on the
+    # guardrails dataclass directly; CostTracker re-reads `max_cost_dollars`
+    # via `self.guardrails.max_cost_dollars` on every check.
+    gr = cost_tracker.guardrails
+    original_max = gr.max_cost_dollars
+    current_spend = cost_tracker.get_summary()["estimated_cost_usd"]
+    gr.max_cost_dollars = current_spend + reserve_dollars
+    try:
+        console.print(
+            "  [dim]expansion.md stale — running final explore "
+            f"(reserve ${reserve_dollars:.2f})[/dim]"
+        )
+        exp_report = explorer.explore()
+        console.print(
+            f"  [green]explore[/green]: {len(exp_report.proposals)} "
+            f"proposals → [cyan]wiki/_meta/expansion.md[/cyan]"
+        )
+    except Exception as exc:
+        console.print(f"  [yellow]final explore failed: {exc}[/yellow]")
+    finally:
+        gr.max_cost_dollars = original_max
+
+
+def _norm_topic(t: str) -> str:
+    return " ".join(t.split()).lower()
+
+
+def _loop_banner(
+    console,
+    topic: str,
+    iters: int,
+    budget: float,
+    interactive: bool,
+    *,
+    cumulative_cost: float = 0.0,
+    cumulative_pages: int = 0,
+    queue_size: int = 0,
+) -> None:
+    mode = "interactive" if interactive else "auto"
+    iters_label = "unlimited" if iters == 0 else str(iters)
+    parts = [
+        f"[bold cyan]loop[/bold cyan] — seed: [bold]{topic}[/bold]",
+        f"iters: {iters_label}",
+        f"budget: ${budget:.2f}",
+        f"queue: {queue_size}",
+        f"selection: {mode}",
+    ]
+    console.print(" · ".join(parts))
+    if cumulative_cost > 0 or cumulative_pages > 0:
+        console.print(
+            f"  [dim]lifetime across sessions: "
+            f"${cumulative_cost:.4f} / {cumulative_pages} pages[/dim]"
+        )
+
+
+def _read_expansion_doc(paths) -> str:
+    """Return the current _meta/expansion.md content, or empty string."""
+    try:
+        if paths.expansion_md.exists():
+            return paths.expansion_md.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+
+def _select_next_topics(
+    exp_report, *, interactive: bool, auto_n: int, seen: set[str]
+):
+    """Pick the next iteration's proposals from Explorer output.
+
+    Returns full ExpansionProposal objects (not title strings) so the
+    research agent gets the signal, rationale, and related-pages
+    context — not just a topic string.
+
+    Only three categories are research-worthy: gap, source_suggestion,
+    open_question. The others (missed_connection, thesis_drift) are
+    editorial and shouldn't trigger new research.
+    """
+    from compendium.models import ExpansionKind
+
+    research_kinds = {
+        ExpansionKind.GAP,
+        ExpansionKind.SOURCE_SUGGESTION,
+        ExpansionKind.OPEN_QUESTION,
+    }
+    candidates = [
+        p for p in exp_report.proposals
+        if p.kind in research_kinds
+        and _norm_topic(p.title) not in seen
+    ]
+    candidates.sort(key=lambda p: (p.priority, p.title))
+    if not candidates:
+        return []
+
+    if interactive:
+        console.print("\n[bold]Select proposals to research next[/bold] "
+                      "(comma-separated numbers, empty to stop):")
+        for i, p in enumerate(candidates[:15], start=1):
+            console.print(
+                f"  [magenta]{i:2d}.[/magenta] "
+                f"[yellow]p{p.priority}[/yellow] "
+                f"[cyan]{p.kind.value}[/cyan] {p.title}"
+            )
+        raw = input("> ").strip()
+        if not raw:
+            return []
+        chosen = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part.isdigit():
+                continue
+            idx = int(part) - 1
+            if 0 <= idx < len(candidates):
+                chosen.append(candidates[idx])
+        return chosen
+
+    return candidates[:auto_n]
+
+
 def cmd_split_book(args: argparse.Namespace) -> None:
     """Split a long PDF into chapter-sized markdown chunks in `raw/articles/`.
 
@@ -1234,6 +1830,33 @@ def main() -> None:
     )
     p_research.set_defaults(func=cmd_research)
 
+
+    p_loop = sub.add_parser(
+        "loop",
+        help="Autonomous research loop: research -> ingest -> lint -> explore -> select -> repeat",
+    )
+    p_loop.add_argument("topic", type=str, nargs="?", default=None,
+                        help="Seed topic (optional when using --resume)")
+    p_loop.add_argument("--vault", type=str, required=True, help="Vault directory")
+    p_loop.add_argument("--resume", action="store_true",
+                        help="Resume from the persisted queue at "
+                        "<vault>/.loop-state.json instead of seeding from a topic. "
+                        "Lets the loop compound across sessions (cron-friendly).")
+    p_loop.add_argument("--max-iterations", type=int, default=3,
+                        help="Max iterations this session. 0 = unlimited "
+                        "(runs until queue empty or budget hit). Default 3.")
+    p_loop.add_argument("--max-cost", type=float, default=None,
+                        help="Total budget cap in USD across the whole loop")
+    p_loop.add_argument("--auto", type=int, default=3,
+                        help="Auto-select top-N proposals per iteration (default 3)")
+    p_loop.add_argument("--interactive", action="store_true",
+                        help="Prompt for manual selection each iteration")
+    p_loop.add_argument("--no-lint", action="store_true",
+                        help="Skip the lint pass each iteration (cheaper but loses drift detection)")
+    p_loop.add_argument("--model-strategic", type=str, default=None)
+    p_loop.add_argument("--model-synthesis", type=str, default=None)
+    p_loop.add_argument("--model-mechanical", type=str, default=None)
+    p_loop.set_defaults(func=cmd_loop)
 
     p_split = sub.add_parser(
         "split-book",

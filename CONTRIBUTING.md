@@ -36,9 +36,6 @@ vault/ingest engine that Learn drives, `cli.py` = the builder CLI,
 
 ## Good first contributions
 
-- Wire the Learn **research prompt** into the in-app build (the engine —
-  `cli.py research` — already exists; it needs `--json-progress` and a build
-  worklist entry; see the README "Known gaps").
 - A non-Mercury reader path, if/when a comparable open diffusion model exists.
 - More demo vaults (original or clearly-licensed, AI-permissive sources).
 - A clean cross-platform fix for the Vite/rolldown native binding (see the

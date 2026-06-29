@@ -601,11 +601,12 @@ app.add_middleware(                      # permissive for local dev / a separate
 # Learn — vault-builder intake (/learn/*) + the ingest swarm (/learn/build).
 from dwell_learn import router as learn_router  # noqa: E402
 from dwell_build import router as build_router  # noqa: E402
-from dwell_endpoints import router as endpoints_router, reader_router  # noqa: E402 — Models & Keys
+from dwell_endpoints import router as endpoints_router, reader_router, search_router  # noqa: E402 — Models & Keys
 app.include_router(learn_router)
 app.include_router(build_router)
 app.include_router(endpoints_router)
 app.include_router(reader_router)
+app.include_router(search_router)
 
 # Serve the built frontend's hashed JS/CSS (single-server mode). Mounted at a
 # specific prefix so it never shadows the API routes; index.html is served by "/".

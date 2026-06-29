@@ -469,6 +469,24 @@ class DwellStore {
     catch (e) { this.setStatus('Save Mercury key failed: ' + msg(e), true); }
   }
   async clearMercuryKey() { try { await api.clearMercuryKey(); this.mercuryHasKey = false; } catch { /* ignore */ } }
+
+  // Web search provider (Tavily / Brave) — powers research-prompt builds.
+  searchProvider = $state('');
+  searchHasKey = $state(false);
+  searchAvailable = $state(false);    // a stored OR .env provider is usable
+  searchProviders = $state<string[]>(['tavily', 'brave']);
+  async loadSearch() {
+    try { const c = await api.searchConfig(); this.searchProvider = c.provider; this.searchHasKey = c.has_key; this.searchAvailable = c.available; this.searchProviders = c.providers; }
+    catch { /* ignore */ }
+  }
+  async setSearchKey(provider: string, key: string) {
+    try { const c = await api.setSearch(provider, key); this.searchProvider = c.provider; this.searchHasKey = c.has_key; this.searchAvailable = c.available; }
+    catch (e) { this.setStatus('Save search key failed: ' + msg(e), true); throw e; }
+  }
+  async clearSearchKey() {
+    try { const c = await api.clearSearch(); this.searchProvider = c.provider; this.searchHasKey = c.has_key; this.searchAvailable = c.available; }
+    catch { /* ignore */ }
+  }
   async loadEndpoints() {
     try { this.endpoints = (await api.endpoints()).endpoints; } catch { /* ignore */ }
   }
@@ -765,6 +783,7 @@ class DwellStore {
     this.loadLearnSettings();
     void this.loadEndpoints();
     void this.loadMercuryKey();
+    void this.loadSearch();
     this.quizzesOn = ls.get('dwell-quizzes') !== '0';
     this.quizEvery = Math.max(2, Math.min(20, num(ls.get('dwell-quiz-every'), 5)));
     this.quizCount = Math.max(3, Math.min(25, num(ls.get('dwell-quiz-count'), 5)));

@@ -2,9 +2,7 @@
 .env
 *.env
 !.env.example
-.dwell-endpoints.json
-.dwell-mercury.json
-.dwell-vaults.json
+.dwell-*.json
 
 # --- python ---
 __pycache__/

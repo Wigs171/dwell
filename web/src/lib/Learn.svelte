@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Learn — build a knowledge base. Create a draft, add material (files / links),
-  // curate the source list, then run the ingest swarm (see BuildPanel) to commit it
-  // into a readable vault.
+  // Learn — build a knowledge base. Phase 2: gather → curate. Create a draft, add material
+  // (files / links / a research prompt), curate the source list. The ingest swarm (commit)
+  // is Phase 3, so Build is still stubbed.
   import { dwell } from './dwell.svelte';
   import BuildPanel from './BuildPanel.svelte';
 
@@ -9,6 +9,7 @@
   let name = $state('');
   let topic = $state('');
   // meta editor (seeded from the draft when it exists)
+  let prompt = $state('');
   let links = $state('');
   let fileInput = $state<HTMLInputElement>();
   let coverInput = $state<HTMLInputElement>();
@@ -17,7 +18,7 @@
   const draftVault = $derived(dwell.learnDraft?.vault ?? '');
   const linkList = $derived(links.split('\n').map((l) => l.trim()).filter(Boolean));
   const fmtSize = (n: number) => (n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
-  const hasSources = $derived(!!src && (src.files.length > 0 || src.links.length > 0));
+  const hasSources = $derived(!!src && (src.files.length > 0 || src.links.length > 0 || src.prompt.trim().length > 0));
 
   let expandPath = $state('');   // a chosen existing knowledge base to expand
 
@@ -34,7 +35,7 @@
     if (fileInput) fileInput.value = '';   // allow re-picking the same file
   }
   function saveMeta() {
-    void dwell.learnSaveMeta('', linkList);
+    void dwell.learnSaveMeta(prompt, linkList);
   }
   function pickCover(e: Event) {
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
@@ -49,7 +50,7 @@
       <!-- step 1: create a draft -->
       <header>
         <h1>Build a knowledge base</h1>
-        <p class="sub">Name it, then add your material — files and links — and an agent swarm will ingest and weave it into a readable knowledge base.</p>
+        <p class="sub">Name it, then add your material — files, links, or a research prompt — and an agent swarm will research, ingest, and weave it into a readable knowledge base.</p>
       </header>
 
       <div class="field">
@@ -117,7 +118,14 @@
       <div class="field">
         <label for="kblinks">Links <span class="opt">videos or web pages, one per line</span></label>
         <textarea id="kblinks" rows="3" bind:value={links} placeholder="https://youtube.com/watch?v=…&#10;https://en.wikipedia.org/wiki/…"></textarea>
-        <div><button class="add" onclick={saveMeta}>Save links</button></div>
+      </div>
+      <div class="field">
+        <label for="kbprompt">Research prompt <span class="opt">web-research a topic + your graph's open nodes</span></label>
+        <textarea id="kbprompt" rows="3" bind:value={prompt} placeholder="e.g. Find new material on the open topics in this graph — recent work, related figures, and counter-arguments."></textarea>
+        <div><button class="add" onclick={saveMeta}>Save links &amp; prompt</button></div>
+        {#if !dwell.searchAvailable}
+          <p class="searchnote">⚠ A research prompt needs a web search key — add one in <strong>Settings → Learn → Web search</strong>.</p>
+        {/if}
       </div>
 
       {#if src}
@@ -139,6 +147,7 @@
               {/each}
             </ul>
           {/if}
+          {#if src.prompt.trim()}<p class="promptline"><span class="badge">prompt</span> {src.prompt}</p>{/if}
         </div>
       {/if}
 
@@ -183,6 +192,7 @@
   .expandrow select:focus { outline: none; border-color: var(--accent); }
   .expandrow .add { margin-top: 0; }
   .hint { font-size: 11.5px; color: var(--meta); margin: 6px 0 0; line-height: 1.5; }
+  .searchnote { font-size: 11.5px; color: var(--err); margin: 6px 0 0; line-height: 1.5; }
   .coverrow { display: flex; align-items: center; gap: 10px; }
   .coverthumb { width: 64px; height: 80px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
 
@@ -199,6 +209,7 @@
   .meta { font-size: 11px; color: var(--meta); flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .rm { background: none; border: none; color: var(--meta); cursor: pointer; padding: 0 2px; font-size: 12px; flex-shrink: 0; }
   .rm:hover { color: var(--err); }
+  .promptline { font-size: 12.5px; color: var(--meta); margin: 8px 0 0; display: flex; gap: 8px; align-items: baseline; line-height: 1.5; }
 
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
   .primary { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 650; font-size: 14px; padding: 10px 20px; border-radius: 10px; cursor: pointer; }

@@ -49,6 +49,15 @@
     }
   }
 
+  // web search provider (research prompts)
+  let searchProv = $state('tavily');
+  let searchKey = $state('');
+  $effect(() => { searchProv = dwell.searchProvider || 'tavily'; });
+  async function saveSearch() {
+    if (!searchKey.trim()) return;
+    try { await dwell.setSearchKey(searchProv, searchKey.trim()); searchKey = ''; } catch { /* surfaced in status */ }
+  }
+
   const COLS: { key: 'bg' | 'panel' | 'fg' | 'border' | 'accent'; label: string }[] = [
     { key: 'bg', label: 'Background' }, { key: 'fg', label: 'Text' },
     { key: 'panel', label: 'Panel / page' }, { key: 'border', label: 'Border' },
@@ -339,6 +348,24 @@
           {:else}
             <p class="hint">Add a provider in <strong>Providers &amp; keys</strong> above, then choose its models here.</p>
           {/if}
+        </div>
+
+        <div class="card">
+          <h2>Web search <span class="note">· research prompts</span></h2>
+          <div class="color-row"><label for="sprov">Provider</label>
+            <select id="sprov" bind:value={searchProv}>
+              {#each dwell.searchProviders as p (p)}<option value={p}>{p === 'tavily' ? 'Tavily' : p === 'brave' ? 'Brave' : p === 'jina' ? 'Jina' : p}</option>{/each}
+            </select></div>
+          <div class="color-row"><label for="skey">API key</label>
+            {#if dwell.searchHasKey}
+              <span class="ep-models">set ✓ ({dwell.searchProvider})</span>
+              <button class="ep-act rm" title="remove" onclick={() => dwell.clearSearchKey()}>✕</button>
+            {:else}
+              <input id="skey" class="ep-in" type="password" placeholder="search API key" bind:value={searchKey} />
+              <button class="add" disabled={!searchKey.trim()} onclick={saveSearch}>Save</button>
+            {/if}
+          </div>
+          <p class="hint">A research prompt fans out web searches (and explores your graph's open nodes) to find new material. Use <a href="https://jina.ai" target="_blank" rel="noopener">Jina</a> (search + reads JS/GitHub pages), <a href="https://tavily.com" target="_blank" rel="noopener">Tavily</a>, or <a href="https://brave.com/search/api" target="_blank" rel="noopener">Brave</a>. {dwell.searchAvailable ? 'Search is ready.' : 'Not set — research prompts won’t run.'}</p>
         </div>
 
         <div class="card">

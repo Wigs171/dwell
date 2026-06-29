@@ -21,7 +21,7 @@ vaults for you from your own files, links, or a topic, using an agent pipeline.
 | `server/` | FastAPI backend (`dwell_server.py`) + the reader engine (`dwell.py`), Learn intake/build (`dwell_learn.py`, `dwell_build.py`), provider keys (`dwell_endpoints.py`), and optional TTS (`dwell_tts.py`). |
 | `web/` | The frontend — Svelte 5 + Vite (TypeScript). The reading UI, themes, settings, narration, and the Learn screens. |
 | `compendium/` | The vault engine + ingest agents that **Learn** drives to build vaults. |
-| `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `enrich`, `explore`, `split-book`. |
+| `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `loop`, `enrich`, `explore`, `split-book`. |
 | `vaults/` | Your knowledge bases. The bundled **`biology-101`** demo lives here. |
 | `docs/` | Design docs and the [vault format spec](docs/VAULT_FORMAT.md). |
 | `tests/` | A smoke test for the server (`dwell_smoke.py`). |
@@ -169,8 +169,7 @@ serves in production and proxies to in dev.
 
 This is an early public release. A few things to know:
 
-- The **research prompt** in the Learn UI is not yet wired into the in-app build;
-  web research is available today via `python cli.py research`. (The field is
-  hidden in the UI until the web wiring lands.)
+- **Research prompts** in Learn need a web-search key — set Tavily / Brave / Jina in
+  Settings → Learn → Web search (or via the variables in `.env.example`).
 - The reader is **Mercury-only** by design (see above).
 - See [docs/](docs/) for design notes and the roadmap.
