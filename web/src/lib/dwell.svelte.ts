@@ -60,7 +60,8 @@ export const OUTPUT_FORMS: { value: string; label: string }[] = [
 // vault is rendered in the target language, re-pitched in place. 'source' = no translation.
 // Free text also works server-side, so any language the model knows is reachable.
 export const LANGUAGES: { value: string; label: string }[] = [
-  { value: 'source', label: 'English' },
+  { value: 'source', label: 'Original (untranslated)' },
+  { value: 'english', label: 'English' },
   { value: 'spanish', label: 'Spanish' },
   { value: 'french', label: 'French' },
   { value: 'german', label: 'German' },

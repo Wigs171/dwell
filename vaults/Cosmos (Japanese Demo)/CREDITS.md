@@ -18,3 +18,9 @@ including commercially, with attribution.
 
 > This is a *content* license for this vault only. The Dwell **software** is
 > licensed separately under Apache-2.0 (see the `LICENSE` file at the repo root).
+
+## Cover image
+
+`cover.jpg` is a Creative Commons–licensed image.
+<!-- TODO before publishing: record the cover's title, author, source URL, and the
+     exact CC license (e.g. CC BY 4.0) here so the attribution is complete. -->

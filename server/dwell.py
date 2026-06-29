@@ -1268,6 +1268,7 @@ _FORM_EXAMPLES = {
 DEFAULT_LANGUAGE = "source"
 LANGUAGES = {
     "source": "",
+    "english": "English",
     "spanish": "Spanish", "french": "French", "german": "German",
     "italian": "Italian", "portuguese": "Portuguese", "mandarin": "Mandarin Chinese",
     "japanese": "Japanese", "korean": "Korean", "arabic": "Arabic",
