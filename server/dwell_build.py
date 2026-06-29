@@ -219,8 +219,15 @@ def _expand_sources(d: Path, sources: list[dict], emit) -> list[dict]:
 def _phase_activity(p: dict) -> str | None:
     ph = p.get("phase")
     # Gather phases (research prompt → cheap non-REPL web gather).
+    if ph == "resolved":
+        subj = (p.get("subject") or "").strip()
+        qs = p.get("queries") or []
+        head = f"Read the vault → researching {subj}" if subj else "Read the vault → planning research"
+        if qs:
+            head += " · " + ", ".join(q for q in qs[:3] if q)
+        return head
     if ph == "search":
-        return "Searching the web for your prompt…"
+        return p.get("msg") or "Searching the web…"
     if ph == "searched":
         n = p.get("count", 0)
         return f"Found {n} source{'' if n == 1 else 's'} · reading…"

@@ -32,6 +32,7 @@ native tool-use, no FINAL_VAR.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -826,21 +827,280 @@ def _query_variants(prompt: str) -> list[str]:
     return out[:3]
 
 
+# ---------------------------------------------------------------------------
+# Topic resolution — read the vault and turn a (possibly vague) prompt into
+# concrete, vault-grounded search queries BEFORE dispatching research agents.
+# ---------------------------------------------------------------------------
+
+# Words that refer to the meta-task ("expand the knowledge base") rather than
+# to any subject. A prompt whose only words are these is "generic": the topic
+# must be inferred from the vault itself, not searched for literally.
+_META_WORDS = {
+    "find", "finds", "found", "new", "fresh", "recent", "material", "materials",
+    "source", "sources", "expand", "expanding", "expansion", "grow", "growing",
+    "extend", "extending", "add", "adding", "more", "the", "a", "an", "any",
+    "knowledge", "base", "bases", "kb", "wiki", "wikis", "vault", "graph",
+    "notes", "note", "page", "pages", "node", "nodes", "entry", "entries",
+    "to", "this", "that", "these", "my", "our", "your", "content", "contents",
+    "information", "info", "stuff", "things", "and", "or", "on", "about",
+    "deepen", "deeper", "fill", "fills", "filling", "gap", "gaps", "build",
+    "building", "out", "develop", "developing", "enrich", "enriching",
+    "update", "updates", "updating", "with", "some", "please", "go", "into",
+    "for", "of", "it", "let's", "lets", "can", "you", "i", "want", "need",
+    "make", "better", "good", "great", "current", "existing", "topic", "topics",
+}
+
+
+def _looks_generic(text: str) -> bool:
+    """True when the text names no subject of its own (e.g. 'expand the
+    knowledge base') — only meta-words remain. The research topic must then
+    be inferred from the vault."""
+    toks = re.findall(r"[a-zA-Z][a-zA-Z'\-]*", (text or "").lower())
+    return not any(t not in _META_WORDS for t in toks)
+
+
+def _deslug(s: str) -> str:
+    return re.sub(r"[-_]+", " ", (s or "").strip()).strip()
+
+
+def _vault_research_digest(paths: VaultPaths) -> dict:
+    """A compact snapshot of vault state for topic resolution: the subject,
+    the index blurb, existing non-source pages, the clearest gaps (wanted-
+    but-missing pages + thin stubs), and the recent activity log."""
+    subject = _read_vault_topic(paths)
+    index_head = ""
+    try:
+        if paths.index_md.exists():
+            index_head = paths.index_md.read_text(encoding="utf-8").strip()[:800]
+    except OSError:
+        pass
+
+    pages: list[str] = []
+    titles: list[str] = []
+    for pid in list_pages(paths):
+        page = read_page(paths, pid)
+        if page is None or page.type == PageType.SOURCE:
+            continue
+        if page.title:
+            titles.append(page.title)
+        summ = " ".join((page.summary or "").split())
+        pages.append(
+            f"- {page.title} [{page.type.value}]" + (f": {summ}" if summ else "")
+        )
+        if len(pages) >= 80:
+            break
+
+    try:
+        broken = [(_deslug(t), c) for t, c, _refs in _broken_for_repl(paths, 18)]
+    except Exception:
+        broken = []
+    try:
+        thin = [(pid, wc) for pid, wc in _thin_for_repl(paths, 12)]
+    except Exception:
+        thin = []
+    try:
+        recent = read_recent(paths, 6)
+    except Exception:
+        recent = ""
+
+    return {
+        "subject": subject,
+        "index_head": index_head,
+        "pages": pages,
+        "titles": titles,
+        "broken": broken,
+        "thin": thin,
+        "recent": recent,
+    }
+
+
+def _fallback_queries(prompt: str, digest: dict) -> list[str]:
+    """Heuristic queries when no LLM is available to resolve the topic.
+
+    Generic prompt → derive from the gaps + subject. Specific prompt → the
+    prompt plus variants (the original behavior)."""
+    if not _looks_generic(prompt):
+        return _query_variants(prompt)
+    # Only use the subject as a query qualifier when it's a short, clean phrase
+    # (vault schema lines can be a verbose sentence full of meta-words).
+    subject = (digest.get("subject") or "").strip()
+    subj_kw = subject if 0 < len(subject.split()) <= 4 else ""
+    out: list[str] = []
+    # Gaps first: wanted-but-missing pages, then thin stubs — clearest signal
+    # of where a new/deepened node belongs.
+    for target, _count in digest.get("broken", []):
+        if target.strip():
+            out.append(f"{target.strip()} {subj_kw}".strip())
+    for pid, _wc in digest.get("thin", []):
+        t = _deslug(pid)
+        if t:
+            out.append(f"{t} {subj_kw}".strip())
+    # Complete vault with no gaps → seed from existing page titles (clean nouns)
+    # to find adjacent/deeper material on the same subjects.
+    if not out:
+        for title in digest.get("titles", []):
+            out.append(title.strip())
+    if not out and subj_kw:
+        out.append(subj_kw)
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for q in out:
+        k = q.lower()
+        if q and not _looks_generic(q) and k not in seen:
+            seen.add(k)
+            uniq.append(q)
+    return uniq[:6] or _query_variants(prompt)
+
+
+_RESOLVE_SYSTEM = """\
+You plan web-search queries that EXPAND an existing knowledge base (a wiki of
+interlinked pages). You are given the vault's SUBJECT, an inventory of its
+pages, its current gaps, the recent activity log, and the user's request.
+
+Turn the request into concrete web-search queries that find NEW source
+material ON THE VAULT'S SUBJECT.
+
+Rules — read carefully:
+- Queries MUST be about the vault's subject matter, never about the meta-task.
+  A request like "find new material and expand the knowledge base" is a request
+  about THIS vault's subject. Treat the words knowledge base / wiki / vault /
+  graph / notes / page / node / expand / grow / deepen as referring to THIS
+  vault — NEVER search for those words literally.
+- Prioritize the gaps. Wanted-but-missing pages (broken wikilinks) are the
+  clearest signal of where a new node belongs; thin stubs want deepening.
+- If the request names a specific topic within the subject, focus there. If it
+  is generic, infer the highest-value directions from the gaps and coverage.
+- Prefer specific, source-findable queries (named subtopics, mechanisms,
+  people, works) over vague ones. Return 3 to 6 queries.
+
+Respond with ONLY a JSON object (no prose, no markdown fences):
+{
+  "subject": "short phrase naming the vault's subject as you understand it",
+  "is_generic_request": true | false,
+  "queries": ["query 1", "query 2", "..."],
+  "rationale": "one sentence on why these queries"
+}
+"""
+
+
+def resolve_research_queries(
+    config: CompendiumConfig,
+    paths: VaultPaths,
+    prompt: str,
+    *,
+    cost_tracker: CostTracker | None = None,
+) -> dict:
+    """Resolve a (possibly vague) research prompt into concrete, vault-
+    grounded search queries.
+
+    Reads vault state (subject, page inventory, gaps, recent log) so a request
+    like "find new material and expand the knowledge base" researches the
+    vault's *actual subject* rather than the literal words. Falls back to
+    heuristics when no LLM auth is available or the call fails.
+
+    Returns {"subject": str, "queries": list[str], "generic": bool,
+             "rationale": str}.
+    """
+    digest = _vault_research_digest(paths)
+    generic = _looks_generic(prompt)
+
+    if not config.has_auth:
+        return {
+            "subject": digest.get("subject", ""),
+            "queries": _fallback_queries(prompt, digest),
+            "generic": generic,
+            "rationale": "no LLM auth — heuristic queries from vault gaps",
+        }
+
+    user_parts = [
+        f"## user request\n{prompt.strip() or '(empty)'}",
+        "",
+        "## vault subject\n"
+        + (digest["subject"] or "(unstated — infer it from the pages below)"),
+    ]
+    if digest["index_head"]:
+        user_parts += ["", "## vault index (intro)", digest["index_head"]]
+    if digest["pages"]:
+        user_parts += [
+            "",
+            f"## existing pages ({len(digest['pages'])} shown)",
+            "\n".join(digest["pages"]),
+        ]
+    if digest["broken"]:
+        gaps = "\n".join(
+            f"- {t} (wanted by {c} page{'s' if c != 1 else ''})"
+            for t, c in digest["broken"]
+        )
+        user_parts += [
+            "",
+            "## wanted-but-missing pages (top gaps — new nodes belong here)",
+            gaps,
+        ]
+    if digest["thin"]:
+        stubs = "\n".join(f"- {_deslug(pid)} ({wc} words)" for pid, wc in digest["thin"])
+        user_parts += ["", "## thin stubs (want deepening)", stubs]
+    if digest["recent"].strip():
+        user_parts += ["", "## recent activity log", digest["recent"].strip()[:1500]]
+
+    data: dict = {}
+    try:
+        client = config.create_anthropic_client()
+        ct = cost_tracker or CostTracker(config.get_guardrails())
+        model = config.tiered_models.get_model(ModelTier.STRATEGIC)
+        text = _one_call(
+            client, ct,
+            model=model,
+            system=_RESOLVE_SYSTEM,
+            user="\n".join(user_parts),
+            max_tokens=700,
+        )
+        data = _extract_json(text)
+    except Exception:
+        data = {}
+
+    raw = data.get("queries") if isinstance(data, dict) else None
+    queries = [q.strip() for q in (raw or []) if isinstance(q, str) and q.strip()]
+    # Guard: drop any query that is itself only meta-words (model slipped and
+    # echoed "expand the knowledge base" instead of a real topic).
+    queries = [q for q in queries if not _looks_generic(q)][:6]
+    if not queries:
+        queries = _fallback_queries(prompt, digest)
+
+    subject = (data.get("subject") if isinstance(data, dict) else None) or digest.get(
+        "subject", ""
+    )
+    return {
+        "subject": subject,
+        "queries": queries,
+        "generic": bool(data.get("is_generic_request", generic))
+        if isinstance(data, dict)
+        else generic,
+        "rationale": (data.get("rationale") if isinstance(data, dict) else "") or "",
+    }
+
+
 def structured_gather(
     config: CompendiumConfig,
     paths: VaultPaths,
     prompt: str,
     registry: IngestRegistry,
     progress: Callable[[str, dict], None] | None = None,
+    *,
+    cost_tracker: CostTracker | None = None,
+    resolve: bool = True,
 ) -> list[Path]:
     """Non-REPL research gather. Returns the saved raw/articles/*.md Paths.
 
-    Builds `web_search` + `fetch_url` from `compendium.repl.functions`,
-    runs the query (plus variants), takes the top unique result URLs,
-    fetches each, and saves each as `raw/articles/<unique-slug>.md` using
-    the SAME provenance-header format as research_agent. Applies the
-    IngestRegistry dedup gate (tombstone → find_by_url → skip, else
-    record). Emits progress events if a callback is given.
+    First RESOLVES the prompt against the vault (subject, page inventory,
+    gaps, recent log) into concrete search queries — so a vague request like
+    "expand the knowledge base" researches the vault's *actual subject*, not
+    the literal words (set `resolve=False` to search the prompt verbatim).
+    Then builds `web_search` + `fetch_url` from `compendium.repl.functions`,
+    runs the queries, takes the top unique result URLs, fetches each, and
+    saves each as `raw/articles/<unique-slug>.md` using the SAME provenance-
+    header format as research_agent. Applies the IngestRegistry dedup gate
+    (tombstone → find_by_url → skip, else record). Emits progress events if
+    a callback is given.
     """
 
     def _emit(phase: str, **payload) -> None:
@@ -858,12 +1118,42 @@ def structured_gather(
     )
     fetch_url = make_fetch_url_fn(jina_api_key=getattr(config, "jina_api_key", ""))
 
-    _emit("search", msg=f"Searching the web for “{prompt}”", query=prompt)
+    # Resolve the prompt → vault-grounded queries before any search. This is
+    # the step that keeps "expand the knowledge base" on the vault's subject.
+    if resolve:
+        plan = resolve_research_queries(
+            config, paths, prompt, cost_tracker=cost_tracker
+        )
+        queries = plan["queries"]
+        topic_label = (plan["subject"] or prompt).strip()
+        _emit(
+            "resolved",
+            subject=plan["subject"],
+            queries=queries,
+            generic=plan["generic"],
+            rationale=plan["rationale"],
+        )
+    else:
+        queries = _query_variants(prompt)
+        topic_label = prompt.strip()
 
-    # Collect unique result URLs across the query + variants.
+    if not queries:
+        queries = _query_variants(prompt)
+
+    _emit(
+        "search",
+        msg=f"Searching the web ({len(queries)} quer"
+        + ("ies" if len(queries) != 1 else "y")
+        + (f" on {topic_label}" if topic_label else "")
+        + ")",
+        query=queries[0] if queries else prompt,
+        queries=queries,
+    )
+
+    # Collect unique result URLs across the resolved queries.
     seen_urls: set[str] = set()
     ranked: list[dict] = []
-    for q in _query_variants(prompt):
+    for q in queries:
         try:
             results = web_search(q, num_results=6)
         except Exception:
@@ -936,7 +1226,7 @@ def structured_gather(
         if "## Sources" not in content:
             content = content.rstrip() + f"\n\n## Sources\n- {title} — {url}\n"
         header = _provenance_header(
-            topic=prompt, source_type="article", source_url=url
+            topic=topic_label or prompt, source_type="article", source_url=url
         )
         target = paths.raw_articles / f"{slug}.md"
         target.write_text(header + content + "\n", encoding="utf-8", newline="\n")

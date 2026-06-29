@@ -275,6 +275,7 @@ def _cmd_ingest_from_prompt(args, config, paths) -> None:
         saved = structured_gather(
             config, paths, prompt, registry,
             progress=_gather_progress if progress else None,
+            cost_tracker=orch.cost_tracker,
         )
     except Exception as exc:
         console.print(f"[red]Gather failed: {exc}[/red]")
