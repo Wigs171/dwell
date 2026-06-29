@@ -89,7 +89,7 @@ elementary level, the scholar, the kid who wants a story, the FAQ-seeker, the
 debate-club kid — none pre-authored. Nobody ships the same book as forty documents;
 Dwell ships the substrate and generates the forty on demand. The vault is a
 **capital good** (one-time ingest cost; output is generated, not stored) →
-subscription / site-license economics. See [[project_dwell_education]].
+subscription / site-license economics.
 
 ## Design commitments (build by these)
 1. The vault encodes **meaning, never form**.
@@ -124,9 +124,8 @@ subscription / site-license economics. See [[project_dwell_education]].
   `DWELL_ROADMAP.md`. Always the general primitive, never a vertical.
 
 ## Related
-- Architecture + handoff: `DWELL_HANDOFF.md`, `DWELL_APP_PLAN.md`.
+- Roadmap: `DWELL_ROADMAP.md`.
 - Engine prompting: `MERCURY_PROMPT_GUIDE.md`.
-- Memory: [[project_the_current]] (Dwell project log) · [[project_dwell_education]]
-  (education-mode + vault economics).
+- Vault on-disk format: `VAULT_FORMAT.md`.
 
 *Authored 2026-06-21.*

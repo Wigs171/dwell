@@ -76,7 +76,7 @@ structure — block-level only, so the karaoke/clarify/quiz offset-map stays int
   Titles = a separate heading field (never an offset-map concern; just reserve its
   height in `domFit`). Standard practice (read-along/immersive-reader) = one formatted
   DOM + ranges, confirmed via the CSS Highlight spec + MDN.
-Validated live on the MPH **Atlantis** node (a genuine elenchus that ends "I concede
+Validated live on a real vault node (a genuine elenchus that ends "I concede
 the tablet likely held a concise chronicle and that Plato added symbolic meaning").
 Built exactly as below (kept for reference):
 
@@ -99,7 +99,7 @@ Seed set: **article, steps, Q&A, dialogue** (confirmed).
 ---
 
 ## PARALLEL UPSTREAM — universal ingest enrichment ← the substrate investment
-**→ Detailed spec: [`DWELL_ENRICH_PLAN.md`](DWELL_ENRICH_PLAN.md) (PLANNED 2026-06-23).** Key
+**Universal ingest enrichment (PLANNED).** Key
 finding + locked decisions: **4 of the 5 data points are nearly FREE** (salience←backlinks;
 terms←page title/summary/aliases; claims+provenance←the grounding engine; `contradicts`←the
 ledger; dates←regex) — the ONLY thing needing an LLM is **typing the edges**. Approach =
@@ -162,7 +162,7 @@ A different *view* of the data, not a restyle of one page (re-traversal / aggreg
 - `magazine` auto-rotation: keep or cut the 3-column reflow.
 - Multi-image layout cadence (every-other feasible page → maybe rarer).
 - Cross-reload vault-stash persistence (localStorage + rehydrate; today in-memory only).
-- Covers for the other vaults (only Pythagoras has an explicit `cover.jpg`).
+- Covers for vaults that lack an explicit `cover.jpg`.
 - A real foreground/tablet listen for audio (only plumbing verified headless).
 
 ## Pre-existing roadmap (from before this arc)
