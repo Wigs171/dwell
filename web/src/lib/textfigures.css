@@ -1,0 +1,374 @@
+/* ============================================================================
+   Text-figures for Dwell — the text edition of layouts.css.
+
+   Derived TEXT-figures (pull-quote, key-takeaways, callout, stepped list, …)
+   that fill the SAME page slots images do, so a text-only page is as rich and
+   varied as an image page. Grounded in DWELL_TEXT_FIGURES_PLAN.md (Müller-
+   Brockmann grid, Bringhurst, Tufte CSS, NN/g, GitHub/MkDocs/Notion callouts).
+
+   THE ARCHITECTURE (one decision drives everything):
+     • Every text-figure is a `<figure data-narration="skip">` → it sits OUTSIDE
+       the karaoke/clarify offset walk (Reader.proseSegs rejects figure/aside/
+       [data-narration="skip"]). page.text stays the clean canonical string.
+     • Body prose is a STABLE rectangle (never multicol, never reshuffled) — the
+       analytic fitter can measure it. Variety lives in the discrete figures, not
+       the reading column. (Anti-pattern: randomizing the body layout.)
+     • A margin figure lives in a named CSS-Grid MARGIN LANE (grid-column:margin),
+       placed DOM-adjacent to its paragraph (correct reading/tab order for free),
+       collapsing to a full-width in-flow block under a container width.
+     • A drop-cap is `::first-letter`/`initial-letter` — NEVER a node extracted
+       from the text (a pseudo-element leaves the offset map untouched).
+     • A pull-quote that DUPLICATES a body line → aria-hidden (avoids a screen-
+       reader double-read; it's already out of the TTS walk). A net-new derived
+       figure → no aria-hidden, so AT users keep it.
+
+   GLOBAL (not Svelte-scoped) on purpose: TextFigures.svelte sets the figure id
+   as a dynamic `.tf-<id>` modifier and per-figure classes, which the scoper
+   can't match statically. Mirrors layouts.css.
+   ========================================================================== */
+
+.tf-page {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 28px 34px;
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--ink);
+  line-height: 1.6;
+  display: flow-root;   /* contain floated figures so fit-measure sees their height */
+}
+/* The HOST page card must be the query container (an element can't query its
+   own size — the page grid AND its margin figures both need an ANCESTOR
+   container to respond to). The lab's .card sets this; the real reader's page
+   card must declare `container-type: inline-size` too. */
+.tf-card-host { container-type: inline-size; }
+.tf-page > p,
+.tf-body > p {
+  font-size: 1em;
+  line-height: 1.6;
+  margin: 0 0 0.72em;
+  text-align: justify;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+}
+.tf-page > p:last-child,
+.tf-body > p:last-child { margin-bottom: 0; }
+.tf-page figure { margin: 0; }   /* figures carry their own spacing per device */
+
+/* A line marker for a sidenote / footnote reference, kept in the body text. */
+.tf-page sup.tf-ref {
+  font-size: 0.68em; line-height: 0; vertical-align: super;
+  color: var(--accent); font-weight: 700; padding-left: 1px;
+}
+
+/* ── Float-wrap figures (pull-quote · sidenote · see-also · glossary) ────────
+   These reuse the IMAGE `side` slot: the figure FLOATS to the top-right and the
+   body text WRAPS around it — a text-figure standing in for an image in the
+   side/diagonal slots. It's the same float the image layouts use (`.l-side`),
+   so karaoke + the wrapped-fit measure carry over unchanged. The figure is
+   placed DOM-adjacent (before the text it wraps): pull-quote/sidenote by their
+   anchor line, see-also/glossary at the very top so the whole block runs down
+   the left. Combined-selector specificity (0,2,0) beats each device's own
+   margin regardless of source order. Collapses to a full-width block in a
+   narrow card. */
+.tf-pullquote.tf-float, .tf-sidenote.tf-float,
+.tf-seealso.tf-float, .tf-glossary.tf-float {
+  float: right;
+  margin: 0.25em 0 0.7em 1.35em;
+}
+.tf-pullquote.tf-float { width: 44%; }
+.tf-sidenote.tf-float  { width: 38%; }
+.tf-seealso.tf-float, .tf-glossary.tf-float { width: 40%; }
+@container (max-width: 520px) {
+  .tf-pullquote.tf-float, .tf-sidenote.tf-float,
+  .tf-seealso.tf-float, .tf-glossary.tf-float {
+    float: none; width: auto; margin: 0.6em 0 0.9em;
+  }
+}
+
+/* ── Shared figure chrome ───────────────────────────────────────────────── */
+.tf-h {                       /* a figure's small caps-y label */
+  font-family: var(--ui, system-ui), sans-serif;
+  font-size: 0.66em; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--accent);
+  margin: 0 0 0.5em;
+}
+
+/* 1 ── Kicker / eyebrow ────────────────────────────────────────────────────
+   A teaser/section label above the title. Small caps, tracked. */
+.tf-kicker {
+  font-family: var(--ui, system-ui), sans-serif;
+  font-size: 0.72em; font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--accent);
+  margin: 0 0 0.5em;
+}
+
+/* 2 ── Headline stack ──────────────────────────────────────────────────────
+   The opening, typographically segmented: kicker → display title → deck. */
+.tf-headline { margin: 0 0 1.1em; border-bottom: 1px solid var(--border); padding-bottom: 0.8em; }
+.tf-headline .tf-title {
+  font-size: 1.9em; line-height: 1.12; font-weight: 700; margin: 0.1em 0 0.32em;
+  letter-spacing: -0.01em;
+}
+.tf-headline .tf-deck {
+  font-size: 1.06em; line-height: 1.4; color: var(--meta);
+  font-style: italic; margin: 0;
+}
+
+/* 3 ── Deck / standfirst ────────────────────────────────────────────────────
+   Larger than body, smaller than title — an entry point under the heading. */
+.tf-deck-solo {
+  font-size: 1.18em; line-height: 1.42; color: var(--meta);
+  margin: 0 0 1em; padding-left: 0.8em;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+/* 4 ── TL;DR box ────────────────────────────────────────────────────────────
+   One-sentence ultra-compression — the visible form of the length axis. */
+.tf-tldr {
+  display: flex; gap: 0.7em; align-items: baseline;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 9px; padding: 0.7em 0.95em; margin: 0 0 1em;
+}
+.tf-tldr .tag {
+  flex: 0 0 auto; font-family: var(--ui, system-ui), sans-serif;
+  font-size: 0.64em; font-weight: 800; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--bg);
+  background: var(--accent); border-radius: 5px; padding: 0.25em 0.5em;
+  position: relative; top: -0.1em;
+}
+.tf-tldr p { margin: 0; font-size: 1.02em; }
+
+/* 5 ── Key-takeaways box ⭐ ───────────────────────────────────────────────────
+   The page's 2–5 major points. Strongest UX evidence — build first. */
+.tf-takeaways {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 9px; padding: 0.85em 1.05em 0.9em; margin: 0 0 1.1em;
+}
+.tf-takeaways ul { margin: 0; padding-left: 1.15em; }
+.tf-takeaways li { margin: 0.32em 0; line-height: 1.42; }
+.tf-takeaways li::marker { color: var(--accent); }
+
+/* 6 ── Callout / admonition (ONE component, typed) ──────────────────────────
+   note · tip · key-insight · question · caution · quote. GitHub/MkDocs/Notion.
+   Hue tints lightly over the card surface so it reads in light AND dark themes;
+   body text keeps --ink. */
+.tf-callout {
+  --c: var(--accent);
+  display: grid; grid-template-columns: auto 1fr; gap: 0.7em;
+  background: color-mix(in srgb, var(--c) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c) 26%, var(--border));
+  border-left: 4px solid color-mix(in srgb, var(--c) 75%, var(--border));
+  border-radius: 9px; padding: 0.75em 0.95em; margin: 0.4em 0 1em;
+}
+.tf-callout .ic { font-size: 1.1em; line-height: 1.5; color: var(--c); }
+.tf-callout .ct { min-width: 0; }
+.tf-callout .cl {
+  font-family: var(--ui, system-ui), sans-serif;
+  font-size: 0.68em; font-weight: 800; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--c); margin: 0 0 0.25em;
+}
+.tf-callout p { margin: 0; line-height: 1.46; }
+.tf-callout[data-kind="note"]        { --c: #3b82f6; }
+.tf-callout[data-kind="tip"]         { --c: #16a34a; }
+.tf-callout[data-kind="key-insight"] { --c: var(--accent); }
+.tf-callout[data-kind="question"]    { --c: #8b5cf6; }
+.tf-callout[data-kind="caution"]     { --c: #d97706; }
+.tf-callout[data-kind="quote"]       { --c: var(--meta); }
+.tf-callout[data-kind="quote"] p { font-style: italic; }
+
+/* 7 ── Pull-quote ────────────────────────────────────────────────────────────
+   The single most striking body line, lifted into the margin. DUPLICATES body
+   → aria-hidden in the markup. Short, set big, accent rule. */
+.tf-pullquote {
+  font-size: 1.32em; line-height: 1.3; font-style: italic;
+  color: color-mix(in srgb, var(--ink) 88%, var(--accent));
+  border-top: 2px solid var(--accent);
+  padding-top: 0.55em; margin: 0.2em 0;
+}
+
+/* 8 ── Block quotation (≠ pull-quote) ───────────────────────────────────────
+   A VERBATIM passage, IN flow (not lifted out), attributed. */
+.tf-blockquote {
+  margin: 0.5em 0 1em; padding: 0.1em 0 0.1em 1.05em;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.tf-blockquote p { margin: 0; font-style: italic; font-size: 1.04em; color: color-mix(in srgb, var(--ink) 92%, transparent); }
+.tf-blockquote cite { display: block; margin-top: 0.4em; font-style: normal; font-size: 0.84em; color: var(--meta); }
+.tf-blockquote cite::before { content: "— "; }
+
+/* 9 ── Stepped / numbered list block ────────────────────────────────────────
+   Enumerable/sequential content (ties to form=guided). Numbered badges. */
+.tf-steps {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 0.85em 1.05em; margin: 0.4em 0 1em;
+  counter-reset: tfstep;
+}
+.tf-steps .tf-h { margin-bottom: 0.6em; }
+.tf-steps ol { list-style: none; margin: 0; padding: 0; }
+.tf-steps li {
+  counter-increment: tfstep;
+  display: grid; grid-template-columns: 1.7em 1fr; gap: 0.6em;
+  align-items: start; margin: 0.42em 0; line-height: 1.42;
+}
+.tf-steps li::before {
+  content: counter(tfstep);
+  font-family: var(--ui, system-ui), sans-serif; font-weight: 700; font-size: 0.82em;
+  width: 1.7em; height: 1.7em; display: grid; place-items: center;
+  border-radius: 50%; background: var(--accent); color: var(--bg);
+}
+
+/* 10 ── Comparison / contrast block (A vs B) ────────────────────────────────
+   Two juxtaposed items with a divider; stacks under a narrow card. */
+.tf-compare {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 0.4em 0 1em;
+  border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+}
+.tf-compare .col { padding: 0.8em 0.95em; }
+.tf-compare .col + .col { border-left: 1px solid var(--border); }
+.tf-compare .ch {
+  font-family: var(--ui, system-ui), sans-serif; font-size: 0.72em; font-weight: 800;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent);
+  margin: 0 0 0.4em;
+}
+.tf-compare p { margin: 0; line-height: 1.46; }
+@container (max-width: 520px) {
+  .tf-compare { grid-template-columns: 1fr; }
+  .tf-compare .col + .col { border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* 11 ── Accordion / expandable detail ───────────────────────────────────────
+   A deep-dive behind a toggle. Native <details> = keyboard + Ctrl-F-on-open. */
+.tf-accordion {
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 0 0.95em; margin: 0.4em 0 1em;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.tf-accordion summary {
+  cursor: pointer; list-style: none; padding: 0.7em 0;
+  font-weight: 600; display: flex; align-items: center; gap: 0.5em;
+}
+.tf-accordion summary::-webkit-details-marker { display: none; }
+.tf-accordion summary::before {
+  content: "›"; color: var(--accent); font-weight: 800;
+  transition: transform 0.15s ease; display: inline-block;
+}
+.tf-accordion[open] summary::before { transform: rotate(90deg); }
+.tf-accordion .det { padding: 0 0 0.85em; line-height: 1.5; color: color-mix(in srgb, var(--ink) 92%, transparent); }
+
+/* 12 ── Read-time / progress chip ───────────────────────────────────────────
+   Est. time + progress; progress is driven by NARRATION time, not word count. */
+.tf-readtime {
+  display: inline-flex; align-items: center; gap: 0.55em;
+  font-family: var(--ui, system-ui), sans-serif; font-size: 0.74em;
+  color: var(--meta); margin: 0 0 1em;
+}
+.tf-readtime .bar { width: 84px; height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.tf-readtime .bar > i { display: block; height: 100%; background: var(--accent); }
+
+/* 13 ── Sidenote / marginalia ───────────────────────────────────────────────
+   A gloss keyed to one line, in the margin. Flow-safe (saccade only) — the
+   safest companion to narration. */
+.tf-sidenote {
+  font-size: 0.82em; line-height: 1.4; color: var(--meta);
+  border-top: 1px solid var(--border); padding-top: 0.4em;
+}
+.tf-sidenote .mk { color: var(--accent); font-weight: 700; }
+
+/* 14 ── Drop-cap & 15 ── Raised initial ─────────────────────────────────────
+   Pure ::first-letter — NEVER a node extracted from the text. */
+.tf-body.dropcap > p:first-of-type::first-letter {
+  -webkit-initial-letter: 3;
+  initial-letter: 3;          /* 3 lines tall, sunk in */
+  font-weight: 700; color: var(--accent);
+  margin-right: 0.08em; font-family: Georgia, serif;
+}
+@supports not (initial-letter: 3) {        /* Firefox fallback: float a big cap */
+  .tf-body.dropcap > p:first-of-type::first-letter {
+    float: left; font-size: 3.1em; line-height: 0.78; padding: 0.02em 0.08em 0 0;
+  }
+}
+.tf-body.raised > p:first-of-type::first-letter {
+  font-size: 2.5em; line-height: 0.7; font-weight: 700;
+  color: var(--accent); vertical-align: baseline; padding-right: 0.02em;
+}
+
+/* ── Tier 2 (gated on the universal-ingest enrichment) ──────────────────────
+   Shown with mock data so the slot/typography can be tuned now; each needs a
+   structured-data source (claims / wikilink graph / sources / terms / dates). */
+
+/* 16 ── By-the-numbers / big-number (float inset) ── needs the claims layer */
+.tf-bignum {
+  float: right; width: 38%; margin: 0.1em 0 0.6em 1.2em; text-align: center;
+  padding: 0.5em 0.6em; border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.tf-bignum .n {
+  font-family: var(--ui, system-ui), sans-serif; font-weight: 800;
+  font-size: 3.2em; line-height: 1; color: var(--accent); letter-spacing: -0.02em;
+}
+.tf-bignum .lbl { font-size: 0.82em; color: var(--meta); margin-top: 0.3em; line-height: 1.35; }
+
+/* 17 ── Related / see-also aside ── have (wikilink graph + centrality) */
+.tf-seealso { font-size: 0.9em; }
+.tf-seealso ul { list-style: none; margin: 0.2em 0 0; padding: 0; }
+.tf-seealso li { margin: 0.4em 0; line-height: 1.34; }
+.tf-seealso a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.tf-seealso a:hover { text-decoration: underline; }
+.tf-seealso .note { display: block; color: var(--meta); font-size: 0.86em; }
+
+/* 18 ── Source / grounding trust strip ── have (sources: + grounding) */
+.tf-sources {
+  display: flex; align-items: center; gap: 0.55em; flex-wrap: wrap;
+  font-family: var(--ui, system-ui), sans-serif; font-size: 0.76em; color: var(--meta);
+  border-top: 1px solid var(--border); padding-top: 0.6em; margin: 1em 0 0;
+}
+.tf-sources .pill {
+  display: inline-flex; align-items: center; gap: 0.3em;
+  padding: 0.18em 0.55em; border-radius: 999px; border: 1px solid var(--border);
+}
+.tf-sources .pill.ok { color: #16a34a; border-color: color-mix(in srgb, #16a34a 40%, var(--border)); }
+
+/* 19 ── Running glossary (margin) ── needs the terms layer */
+.tf-glossary { font-size: 0.84em; }
+.tf-glossary dt { font-weight: 700; color: var(--ink); margin-top: 0.5em; }
+.tf-glossary dt:first-child { margin-top: 0; }
+.tf-glossary dd { margin: 0.1em 0 0; color: var(--meta); line-height: 1.38; }
+
+/* 20 ── Inline definition tooltip ── needs the terms layer.
+   The TERM stays in the body (narrated); the gloss is data-narration="skip"
+   and focusable (WCAG 1.4.13: hover OR focus, Esc-dismissable). */
+.tf-def { position: relative; }
+.tf-def > .term {
+  border-bottom: 1px dotted var(--accent); cursor: help;
+  text-decoration: none; color: inherit;
+}
+.tf-def > .gloss {
+  position: absolute; left: 0; bottom: 100%; z-index: 3;
+  width: max-content; max-width: 240px; margin-bottom: 6px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 0.5em 0.65em; font-size: 0.82em; line-height: 1.4;
+  box-shadow: 0 6px 24px #0005;
+  opacity: 0; visibility: hidden; transition: opacity 0.12s ease;
+}
+.tf-def:hover > .gloss,
+.tf-def:focus-within > .gloss { opacity: 1; visibility: visible; }
+
+/* 21 ── Timeline / chronology strip (banner) ── needs temporal anchors.
+   (Really a Tier-2 *view*, shown here as a per-page strip.) */
+.tf-timeline {
+  display: flex; gap: 0; margin: 0.2em 0 1em; padding: 0.4em 0 0;
+  border-top: 2px solid var(--border); overflow-x: auto;
+}
+.tf-timeline .ev { flex: 1 1 0; min-width: 7em; position: relative; padding: 0.9em 0.6em 0 0.2em; }
+.tf-timeline .ev::before {
+  content: ""; position: absolute; top: -0.46em; left: 0;
+  width: 0.7em; height: 0.7em; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 3px var(--pane, var(--bg));
+}
+.tf-timeline .when { font-family: var(--ui, system-ui), sans-serif; font-weight: 700; font-size: 0.8em; color: var(--accent); }
+.tf-timeline .what { font-size: 0.84em; line-height: 1.34; color: var(--meta); margin-top: 0.15em; }

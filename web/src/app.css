@@ -1,0 +1,149 @@
+/* Dwell — global theme + reset. Palette mirrors the tkinter/prototype reader:
+   dark chrome, cream "paper", serif reading. Component styles are scoped in each
+   .svelte file; this holds only variables, the reset, and the app shell layout. */
+:root {
+  /* 5 base theme vars (Odysseus model) — overwritten at runtime by
+     applyThemeVars(); these defaults are the 'claude' theme for first paint. */
+  --bg: #262624;
+  --fg: #f5f4f0;
+  --panel: #30302e;
+  --border: #4a4a47;
+  --accent: #c6613f;
+
+  /* derived — Dwell's surface vocabulary, computed from the 5 base vars so the
+     whole UI (chrome, sidebar, reading page) re-themes from one switch. */
+  --chrome: var(--panel);
+  --pane: var(--panel);                                          /* reading page */
+  --ink: var(--fg);                                             /* reading text */
+  --meta: color-mix(in srgb, var(--fg) 52%, var(--bg));        /* muted text */
+  --line: var(--border);
+  --opt: color-mix(in srgb, var(--fg) 9%, var(--panel));       /* button / chip bg */
+  --opt-fg: var(--fg);
+  --hover: color-mix(in srgb, var(--accent) 12%, transparent); /* Odysseus tint */
+  --accent-ink: #fff;
+  --ready: #6fcf97;                                            /* cached branch */
+  --leap: var(--accent);                                       /* ✧ unexpected */
+  --err: #ff6b6b;
+  --radius: 9px;
+  --li-pad: 5px 8px;                                          /* sidebar row padding (density) */
+  --bg-effect-intensity: 1;                                   /* animated background tuning */
+  --bg-effect-size: 1;
+  color-scheme: dark;
+}
+
+/* Density (Odysseus) — drives sidebar row padding via --li-pad. */
+html[data-density="compact"]  { --li-pad: 2px 8px; }
+html[data-density="spacious"] { --li-pad: 9px 9px; }
+
+/* ── Animated backgrounds (Odysseus) ──────────────────────────────────────
+   The base color is on <body>; a fixed canvas (background.ts) animates behind
+   the app, and the app shell is transparent so it shows through the gaps around
+   the floating reading cards. `dots`/`synapse` add a static CSS base layer. */
+body { background-color: var(--bg); }
+#app { position: relative; z-index: 1; }                      /* sit above the canvas */
+canvas[data-dwell-bg] { opacity: var(--bg-effect-intensity, 1); }
+
+body.bg-pattern-dots {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--bg-effect-color, var(--fg)) calc(5% * var(--bg-effect-intensity, 1)), transparent) 1px,
+    transparent 1px);
+  background-size: 20px 20px; background-attachment: fixed;
+}
+body.bg-pattern-synapse {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--bg-effect-color, var(--fg)) calc(3.5% * var(--bg-effect-intensity, 1)), transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--bg-effect-color, var(--fg)) calc(3.5% * var(--bg-effect-intensity, 1)), transparent) 1px, transparent 1px);
+  background-size: 24px 24px; background-attachment: fixed;
+}
+
+/* Frosted glass (ported 1:1 from Odysseus): a very translucent tint + a top
+   highlight gradient + a strong saturating blur, so whatever's behind (the
+   animated background) reads through like layered glass. */
+body.theme-frosted .sidebar,
+body.theme-frosted .icon-rail,
+body.theme-frosted .win,
+body.theme-frosted .page,
+body.theme-frosted .panel {
+  background-color: color-mix(in srgb, var(--panel) 32%, transparent) !important;
+  background-image: linear-gradient(180deg,
+    color-mix(in srgb, var(--fg) 14%, transparent) 0%,
+    color-mix(in srgb, var(--fg) 4%, transparent) 26%,
+    transparent 55%) !important;
+  backdrop-filter: blur(24px) saturate(170%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(170%) !important;
+  border-color: color-mix(in srgb, var(--fg) 22%, transparent) !important;
+}
+/* The bars that paint their own solid panel band become transparent so they
+   blend into the frosted surface instead of reading as a dark strip. */
+body.theme-frosted .brand,
+body.theme-frosted .user-bar,
+body.theme-frosted .topbar,
+body.theme-frosted .status {
+  background: transparent !important;
+}
+body.theme-frosted .titlebar {
+  background: transparent !important;
+  backdrop-filter: blur(24px) !important;
+  -webkit-backdrop-filter: blur(24px) !important;
+}
+body.theme-frosted .win,
+body.theme-frosted .panel,
+body.theme-frosted .page {
+  box-shadow:
+    0 14px 36px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 color-mix(in srgb, var(--fg) 14%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 14%, transparent) !important;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--opt-fg);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+#app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+
+button {
+  font: inherit; cursor: pointer; border: none; border-radius: 7px;
+  background: var(--opt); color: var(--opt-fg); padding: 7px 12px;
+  transition: filter .12s ease, background .12s ease;
+}
+button:hover:not(:disabled) { filter: brightness(1.18); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); }
+
+select, input[type="text"] {
+  font: inherit; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+}
+input[type="range"], input[type="checkbox"] { accent-color: var(--accent); }
+label.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--fg); white-space: nowrap; }
+
+.dim { color: var(--meta); }
+.spacer { flex: 1 1 auto; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* thin, unobtrusive scrollbars on the dark surfaces */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* The word the TTS is currently speaking — accent highlight (CSS Custom Highlight).
+   Global (not Svelte-scoped): ::highlight() can't be scoped. Driven by Reader.svelte. */
+::highlight(dwell-spoken) {
+  background-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Quiz open-book: the answer evidence highlighted in the pages while a quiz is active. */
+::highlight(dwell-quiz) {
+  background-color: rgba(255, 213, 79, 0.45);
+}
+
+/* The saved passage a note points to — shown when you jump back to it from Notes. */
+::highlight(dwell-note) {
+  background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}

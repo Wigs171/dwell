@@ -1,0 +1,12 @@
+# Dwell web server (Phase 1 of DWELL_APP_PLAN.md) — extra deps beyond the engine.
+# Install:  pip install -r prototypes/requirements-server.txt
+fastapi>=0.115
+uvicorn[standard]>=0.34
+sse-starlette>=2.2
+
+# The engine (dwell.py) additionally needs, already part of the Compendium env:
+#   openai                  # Mercury (Inception) provider — the default engine
+#   anthropic               # Claude provider (fallback engine)
+#   sentence-transformers   # embeddings (all-MiniLM-L6-v2); TF-IDF stdlib fallback
+#   numpy
+# Optional audio narration (dwell_tts.py): kokoro-onnx, sounddevice

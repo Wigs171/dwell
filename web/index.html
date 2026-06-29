@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#262624" />
+    <meta name="description" content="Dwell — a streaming, steerable reader that wanders a knowledge vault." />
+    <title>Dwell</title>
+    <!-- Pre-paint: apply the saved theme's 5 base vars before the app mounts so
+         there's no flash of the default theme. Mirrors themes.ts (keep in sync). -->
+    <script>
+      (function () {
+        try {
+          var T = {
+            light:['#f0ebe3','#5a5248','#faf6f0','#d4cdc2','#c47d5a',1],
+            dark:['#282c34','#ecfbf4','#111111','#355a66','#52a98c',0],
+            claude:['#262624','#f5f4f0','#30302e','#4a4a47','#c6613f',0],
+            midnight:['#0d1117','#c9d1d9','#161b22','#30363d','#f85149',0],
+            ocean:['#0b1a2c','#64d2ff','#091422','#1e5074','#4facfe',0],
+            gpt:['#212121','#ececec','#171717','#424242','#949494',0],
+            vapor:['#0a0a0f','#0ff0fc','#12101a','#9b30ff','#e040fb',0],
+            retrowave:['#1a1a2e','#e94560','#16213e','#533483','#e94560',0],
+            terminal:['#000000','#00ff41','#0a0a0a','#003b00','#00ff41',0],
+            daydream:['#0a0a0a','#ededed','#18181b','#262626','#e84f3d',0],
+            paper:['#faf8f5','#3b3836','#ffffff','#d5d0c8','#c5ac4a',1],
+            lavender:['#f3eef8','#3d3551','#faf7ff','#cec3de','#9b6dcc',1],
+            cute:['#fff0f5','#d4608a','#fff8fa','#f0c0d0','#ff6b9d',1]
+          };
+          var name = localStorage.getItem('dwell-theme') || 'light';
+          var t = T[name];
+          if (!t) {  // a user-authored custom theme?
+            var customs = JSON.parse(localStorage.getItem('dwell-custom-themes') || '[]');
+            for (var j = 0; j < customs.length; j++) {
+              var c = customs[j];
+              if (c && c.name === name) { t = [c.bg, c.fg, c.panel, c.border, c.accent, c.light ? 1 : 0]; break; }
+            }
+          }
+          t = t || T.claude;
+          var s = document.documentElement.style, k = ['--bg','--fg','--panel','--border','--accent'];
+          for (var i = 0; i < 5; i++) s.setProperty(k[i], t[i]);
+          s.setProperty('color-scheme', t[5] ? 'light' : 'dark');
+          if (t[5]) document.documentElement.classList.add('light');
+          var dens = localStorage.getItem('dwell-density');
+          if (dens) document.documentElement.setAttribute('data-density', dens);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

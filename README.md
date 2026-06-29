@@ -1,0 +1,176 @@
+# Dwell
+
+**A streaming, steerable reader for knowledge that builds itself.**
+
+Dwell turns a folder of cross-linked Markdown — a *vault* — into an endless,
+narrated, "rabbit-hole" reading experience. Instead of clicking through static
+pages, you drift through the knowledge graph: each page is re-composed on the
+fly in the voice, reading level, and form you choose, and you can *steer* where
+the thread goes next or let it wander. A companion **Learn** mode builds new
+vaults for you from your own files, links, or a topic, using an agent pipeline.
+
+> Dwell ships with a small, original **Biology 101** demo vault so you can try it
+> the moment the server starts.
+
+---
+
+## What's in the box
+
+| Path | What it is |
+|------|------------|
+| `server/` | FastAPI backend (`dwell_server.py`) + the reader engine (`dwell.py`), Learn intake/build (`dwell_learn.py`, `dwell_build.py`), provider keys (`dwell_endpoints.py`), and optional TTS (`dwell_tts.py`). |
+| `web/` | The frontend — Svelte 5 + Vite (TypeScript). The reading UI, themes, settings, narration, and the Learn screens. |
+| `compendium/` | The vault engine + ingest agents that **Learn** drives to build vaults. |
+| `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `enrich`, `explore`, `split-book`. |
+| `vaults/` | Your knowledge bases. The bundled **`biology-101`** demo lives here. |
+| `docs/` | Design docs and the [vault format spec](docs/VAULT_FORMAT.md). |
+| `tests/` | A smoke test for the server (`dwell_smoke.py`). |
+
+---
+
+## ⚠️ The reader needs a Mercury (Inception) key
+
+Dwell's reader is built on **Mercury**, a text-*diffusion* model from
+[Inception](https://inceptionlabs.ai) (OpenAI-compatible API). This is a
+deliberate design choice — the streaming, refine-in-place reading effect depends
+on a diffusion LLM, and there is currently no drop-in substitute. Set
+`INCEPTION_API_KEY` (in `.env` or the in-app Settings) to use the live reader.
+
+Without it, the reader falls back to a free **"dry" mode** that stitches the raw
+vault text together with no LLM — fine for verifying the app runs, but it is not
+the real experience.
+
+The **Learn** builder is separate and runs on **Anthropic Claude** by default
+(set `ANTHROPIC_API_KEY`), or on any OpenAI-compatible provider you add in
+Settings.
+
+---
+
+## Quickstart
+
+Requires **Python 3.11+** and **Node 18+**.
+
+```bash
+git clone <your-fork-url> dwell
+cd dwell
+
+# 1. Python deps
+python -m venv .venv
+# Windows:  .venv\Scripts\activate     |  macOS/Linux:  source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Keys
+cp .env.example .env          # then edit: INCEPTION_API_KEY (reader), ANTHROPIC_API_KEY (Learn)
+
+# 3. Build the frontend
+cd web && npm install && npm run build && cd ..
+
+# 4. Run
+python server/dwell_server.py          # or:  ./run.sh   (macOS/Linux)
+#                                       or:  server/Launch Dwell Server.bat  (Windows)
+```
+
+Open **http://127.0.0.1:8000** — the Biology 101 demo vault is already there.
+
+> **macOS / Linux note:** the frontend pins a Windows build of Vite's native
+> bundler binding (`@rolldown/binding-win32-x64-msvc`) to work around
+> [npm/cli#4828](https://github.com/npm/cli/issues/4828). If `npm ci` /
+> `npm run build` fails on that binding on macOS/Linux, remove that line from
+> `web/package.json` and `web/package-lock.json`, then run `npm install` so npm
+> resolves your platform's binding. (Tracked as a known cross-platform issue.)
+
+### Dev mode (hot reload)
+
+Run the backend and the Vite dev server separately; Vite proxies the API to the
+backend, so you get instant frontend reloads:
+
+```bash
+# terminal 1 — backend
+python server/dwell_server.py
+# terminal 2 — frontend
+cd web && npm run dev          # http://localhost:5173
+```
+
+---
+
+## First-run model downloads
+
+Two optional capabilities fetch models on first use; both have automatic
+fallbacks, so nothing is required up front:
+
+- **Semantic embeddings** (`sentence-transformers`, ~a few hundred MB incl.
+  PyTorch) power the best "next page" choices and the *missed-connections*
+  feature. Install with `pip install -e ".[embeddings]"`. Without it, Dwell uses
+  a built-in TF-IDF fallback.
+- **Audio narration** (`kokoro-onnx`, ~hundreds of MB) gives high-quality local
+  text-to-speech. Install with `pip install -e ".[tts]"`. Without it, the
+  browser's Web Speech API is used.
+
+---
+
+## Building your own vaults
+
+Two ways:
+
+- **Learn tab (in the app):** create a knowledge base, add files (PDF / Markdown
+  / text) and links, and run the ingest swarm with live progress, cost caps, and
+  stop/resume. New vaults appear in your library when they finish.
+- **CLI:** `python cli.py ingest <file-or-url> --vault vaults/my-topic` (run
+  `python cli.py init vaults/my-topic --topic "..."` first). `cli.py research
+  "<topic>"` will gather sources from the web and ingest them (needs a search
+  provider — see `.env.example`).
+
+See [docs/VAULT_FORMAT.md](docs/VAULT_FORMAT.md) for the on-disk format if you'd
+rather hand-author one (that's how the demo vault was made).
+
+---
+
+## Configuration
+
+All settings can be provided via environment variables (or a `.env` file); API
+keys can also be entered in the app's Settings UI, where they're stored under
+your vault root and never committed.
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `INCEPTION_API_KEY` | Mercury reader engine | — (dry mode if unset) |
+| `ANTHROPIC_API_KEY` | Learn / ingest pipeline | — |
+| `COMPENDIUM_SEARCH_PROVIDER` / `COMPENDIUM_SEARCH_API_KEY` | Web research (`tavily`/`brave`/`jina`) | none |
+| `JINA_API_KEY` | Research + page-fetch via Jina | — |
+| `DWELL_VAULT_ROOT` | Where vaults live | `./vaults` |
+| `DWELL_HOST` / `DWELL_PORT` | Server bind address | `127.0.0.1` / `8000` |
+
+---
+
+## Architecture in one paragraph
+
+The vault is a content-neutral substrate: cross-linked Markdown pages with YAML
+frontmatter. The **reader** (`server/dwell.py`) loads the vault, builds an
+embedding space + the wikilink graph, and walks it — for each step it asks
+Mercury to re-compose the underlying page's material into one narrated "page" in
+the chosen voice/level/form/language, caching results so revisiting is free.
+**Learn** (`server/dwell_learn.py` + `dwell_build.py`) drives the `compendium`
+ingest pipeline (`cli.py ingest`/`research` as cancellable subprocesses) to turn
+raw material into a vault. The **frontend** (`web/`) is a Svelte SPA the backend
+serves in production and proxies to in dev.
+
+---
+
+## License
+
+- **Code:** [Apache-2.0](LICENSE).
+- **Demo vault content** (`vaults/biology-101/`): original material released
+  under [CC BY 4.0](vaults/biology-101/CREDITS.md). Vaults *you* build carry
+  whatever license their sources do — that's on you.
+
+---
+
+## Status & known gaps
+
+This is an early public release. A few things to know:
+
+- The **research prompt** in the Learn UI is not yet wired into the in-app build;
+  web research is available today via `python cli.py research`. (The field is
+  hidden in the UI until the web wiring lands.)
+- The reader is **Mercury-only** by design (see above).
+- See [docs/](docs/) for design notes and the roadmap.

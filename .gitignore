@@ -1,0 +1,54 @@
+# --- secrets & local config (NEVER commit) ---
+.env
+*.env
+!.env.example
+.dwell-endpoints.json
+.dwell-mercury.json
+.dwell-vaults.json
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+.venv/
+venv/
+
+# --- node / frontend ---
+node_modules/
+web/dist/
+web/dist-ssr/
+*.local
+
+# --- logs ---
+*.log
+
+# --- vault runtime / generated files (the page .md are tracked; caches are not) ---
+.dwell-embeddings.json
+.dwell-tween-cache.json
+dwell-history.json
+.loop-state.json
+.ingest-registry.json
+*.extracted.txt
+*.claude-baseline
+
+# --- model weights / caches (never commit) ---
+*.onnx
+*.safetensors
+*.gguf
+.cache/
+
+# --- user-created vaults: keep ONLY the bundled demo ---
+vaults/*
+!vaults/biology-101/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

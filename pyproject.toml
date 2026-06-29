@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dwell"
+version = "0.1.0"
+description = "Dwell — a streaming, steerable reader for LLM-built knowledge vaults, with an in-app vault builder (Learn)."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "anthropic>=0.49.0",      # Learn/ingest pipeline (Claude or any provider via the compat shim)
+    "openai>=1.40.0",         # reader: Mercury (Inception) OpenAI-compatible client
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.27.0",
+    "tiktoken>=0.9.0",
+    "rich>=13.9.0",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pypdf>=5.0",
+    "pymupdf>=1.24",
+    "youtube-transcript-api>=0.6.0",
+]
+
+[project.optional-dependencies]
+server = [                    # the web app (FastAPI backend serving the reader + Learn)
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "sse-starlette>=2.2",
+    "python-multipart>=0.0.18",
+]
+embeddings = [                # semantic neighbors + missed-connections (else TF-IDF fallback)
+    "sentence-transformers>=3.0",
+]
+tts = [                       # optional audio narration (Kokoro); browser Web Speech fallback
+    "kokoro-onnx>=0.4.0",
+    "sounddevice>=0.5.0",
+]
+search-tavily = ["tavily-python>=0.5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+dwell = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli"]
+
+[tool.setuptools.packages.find]
+include = ["compendium*"]

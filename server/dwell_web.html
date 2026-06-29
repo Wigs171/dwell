@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dwell</title>
+<style>
+  :root{
+    --bg:#1e1f24; --pane:#faf7f0; --ink:#23252b; --meta:#9aa0aa;
+    --accent:#6b8afd; --opt:#2a2c33; --opt-fg:#e6e9ef; --ready:#7fd1a6;
+    --leap:#c9b48a; --chrome:#15161a; --err:#ff8d8d;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--opt-fg);
+    font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;
+    display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  button{font:inherit;cursor:pointer;border:none;border-radius:7px;
+    background:var(--opt);color:var(--opt-fg);padding:7px 12px}
+  button:hover:not(:disabled){filter:brightness(1.18)}
+  button:disabled{opacity:.45;cursor:default}
+  button.primary{background:var(--accent);color:#fff}
+  select,input[type=text]{font:inherit;background:#26282f;color:var(--opt-fg);
+    border:1px solid #3a3d46;border-radius:7px;padding:6px 8px}
+  label.chk{display:inline-flex;align-items:center;gap:5px;color:#cfd3da}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px}
+  .bar{background:var(--bg);border-bottom:1px solid #2a2c33}
+  .dim{color:var(--meta)} .dim small{font-size:11px}
+  .grow{flex:1 1 auto;min-width:80px}
+  #menu{padding:10px 14px;gap:10px;display:none}
+  #menu .m{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+  #menu .m small{color:var(--meta);font-size:11px;padding-left:2px}
+  #stage{flex:1 1 auto;overflow:auto;display:flex;justify-content:center;padding:22px 16px}
+  #paper{background:var(--pane);color:var(--ink);width:min(720px,100%);
+    border-radius:10px;padding:34px 40px;box-shadow:0 8px 40px #0006;
+    font-family:Georgia,'Times New Roman',serif;font-size:17px;line-height:1.62;
+    white-space:pre-wrap;min-height:60px}
+  #paper.empty{color:#b9b3a6;font-style:italic}
+  #tag{max-width:min(720px,100%);margin:6px auto 0;color:var(--meta);
+    font-family:Consolas,monospace;font-size:11px}
+  #branches{padding:6px 14px;gap:8px}
+  #branches .b{background:var(--opt);text-align:left;max-width:260px;line-height:1.3}
+  #branches .b.ready{color:var(--ready)}
+  #branches .b.leap{color:var(--leap)}
+  .bottom{background:var(--chrome);border-top:1px solid #2a2c33}
+  #status{padding:5px 14px;color:var(--meta);font-size:12px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #status.err{color:var(--err)}
+  #pop{position:fixed;z-index:50;display:none;gap:2px;background:var(--accent);
+    padding:2px;border-radius:8px;box-shadow:0 4px 18px #0008}
+  #pop button{font-size:12px;padding:5px 9px}
+  #overlay{position:fixed;inset:0;background:#0009;display:none;z-index:60;
+    align-items:center;justify-content:center}
+  #missed{background:#23252b;border:1px solid #3a3d46;border-radius:12px;
+    width:min(640px,92%);max-height:80vh;overflow:auto;padding:18px 22px}
+  #missed h3{margin:.2em 0 .6em}
+  #missed .p{padding:6px 0;border-bottom:1px solid #2f323a;font-size:13px}
+  #missed .s{color:var(--leap);font-family:Consolas,monospace}
+  .spacer{flex:1 1 auto}
+</style>
+</head>
+<body>
+  <!-- chrome: vault + engine + voice controls -->
+  <div class="bar">
+    <div class="row">
+      <strong style="color:#cfd3da">Dwell</strong>
+      <select id="vault" class="grow" title="vault"></select>
+      <button id="load" class="primary">Load brain</button>
+      <span id="cost" class="dim"></span>
+    </div>
+    <div class="row">
+      <span class="dim">Engine</span>
+      <select id="engine"><option value="">(default)</option>
+        <option value="mercury">mercury</option><option value="anthropic">anthropic</option></select>
+      <span class="dim">Voice</span>
+      <select id="voice" style="min-width:150px"></select>
+      <span class="dim">Wander</span>
+      <input id="wander" type="range" min="0" max="1" step="0.05" value="0.4" style="width:120px">
+      <label class="chk"><input id="diffuse" type="checkbox" checked> ✦ diffuse</label>
+      <label class="chk"><input id="dry" type="checkbox"> Free (no-LLM)</label>
+      <span class="spacer"></span>
+      <button id="missedBtn" disabled>✧ Missed links</button>
+    </div>
+  </div>
+
+  <!-- launch menu -->
+  <div id="menu" class="row"></div>
+
+  <!-- reading stage -->
+  <div id="stage">
+    <div style="width:min(720px,100%)">
+      <div id="paper" class="empty">Pick a vault and load a brain to begin.</div>
+      <div id="tag"></div>
+    </div>
+  </div>
+
+  <!-- branches -->
+  <div id="branches" class="row"></div>
+
+  <!-- transport -->
+  <div class="bottom">
+    <div class="row">
+      <input id="steer" type="text" class="grow" placeholder="Steer with a phrase (e.g. &quot;toward Kepler&quot;)… ↵" disabled>
+      <button id="steerBtn" disabled>Steer ↳</button>
+      <button id="next" disabled>Next (flow) →</button>
+      <button id="newthread" disabled>↻ New thread</button>
+    </div>
+    <div id="status">Pick a vault and load a brain.</div>
+  </div>
+
+  <!-- select-to-expand popover -->
+  <div id="pop">
+    <button data-mode="expand">✦ Expand</button>
+    <button data-mode="simplify">Simplify</button>
+    <button data-mode="deeper">Go deeper</button>
+  </div>
+
+  <!-- missed-connections overlay -->
+  <div id="overlay"><div id="missed"></div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const API = location.origin;          // server serves this page, so same origin
+
+let SID = null;                       // session id
+let busy = false;                     // a stream is in flight
+let currentText = "";                 // the page text (for select-to-expand math)
+let started = false;                  // navigator created (a thread is running)
+
+// ---- tiny SSE-over-POST client --------------------------------------------
+// fetch + ReadableStream; every event's data is a JSON object.
+async function streamPost(path, body, handlers){
+  const resp = await fetch(API + path, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body)});
+  if(!resp.ok){
+    let d; try{ d = (await resp.json()).detail; }catch{ d = resp.statusText; }
+    throw new Error(d || ("HTTP "+resp.status));
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const BOUND = /\r?\n\r?\n/;          // event terminator (sse_starlette uses CRLF)
+  for(;;){
+    const {value, done} = await reader.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let m;
+    while((m = BOUND.exec(buf))){
+      const raw = buf.slice(0, m.index); buf = buf.slice(m.index + m[0].length);
+      let ev = "message", data = "";
+      for(const line of raw.split(/\r?\n/)){
+        if(line.startsWith("event:")) ev = line.slice(6).trim();
+        else if(line.startsWith("data:")) data += (data?"\n":"") + line.slice(5).replace(/^ /,"");
+      }
+      if(!data) continue;                 // skip comments / pings
+      let payload; try{ payload = JSON.parse(data); }catch{ continue; }
+      (handlers[ev] || (()=>{}))(payload);
+    }
+  }
+}
+
+async function jget(path){ const r = await fetch(API+path); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText); return r.json(); }
+async function jpost(path, body){ const r = await fetch(API+path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.statusText); return r.json(); }
+
+function status(msg, err){ const s=$("#status"); s.textContent = msg; s.classList.toggle("err", !!err); }
+function setCost(c){ $("#cost").textContent = (c!=null) ? ("session $"+Number(c).toFixed(4)) : ""; }
+function atBottom(el){ return el.scrollHeight - el.scrollTop - el.clientHeight < 60; }
+
+// ---- boot: list vaults -----------------------------------------------------
+async function boot(){
+  try{
+    const {vaults, root} = await jget("/vaults");
+    const sel = $("#vault"); sel.innerHTML = "";
+    if(!vaults.length){ sel.innerHTML = `<option>(no vaults under ${root})</option>`; return; }
+    for(const v of vaults){
+      const o = document.createElement("option");
+      o.value = v.path;
+      o.textContent = `${v.name}  ·  ${v.nodes} nodes${v.has_voice?"  · 🎙 voice":""}`;
+      sel.appendChild(o);
+    }
+    // default to the Pythagoras vault if present (the validated one)
+    const py = [...sel.options].find(o => /pythag/i.test(o.textContent));
+    if(py) sel.value = py.value;
+    status("Pick a vault and load a brain.");
+  }catch(e){ status("Could not reach the server: "+e.message, true); }
+}
+
+// ---- load a session --------------------------------------------------------
+async function load(){
+  $("#load").disabled = true;
+  status("Loading brain (embedding pages — first load ~6s)…");
+  try{
+    const info = await jpost("/session", {
+      vault: $("#vault").value,
+      engine: $("#engine").value || null,
+      dry: $("#dry").checked,
+    });
+    SID = info.session_id;
+    started = false;
+    // voices dropdown: vault voices first, then presets
+    const vsel = $("#voice"); vsel.innerHTML = "";
+    const grp = (label, items) => {
+      if(!items.length) return;
+      const og = document.createElement("optgroup"); og.label = label;
+      for(const v of items){ const o=document.createElement("option"); o.value=v; o.textContent=v; og.appendChild(o); }
+      vsel.appendChild(og);
+    };
+    grp("vault", info.voices.vault_voices);
+    grp("presets", info.voices.presets);
+    vsel.value = info.voices.current;
+    // launch menu
+    const menu = $("#menu"); menu.innerHTML = ""; menu.style.display = "flex";
+    const lbl = document.createElement("span"); lbl.className="dim"; lbl.textContent="Begin:";
+    menu.appendChild(lbl);
+    for(const m of info.menu){
+      const wrap = document.createElement("div"); wrap.className="m";
+      const b = document.createElement("button");
+      b.textContent = ({resume:"▸ ",new:"✦ ",surprise:"🎲 "}[m.key]||"") + m.label;
+      b.onclick = () => begin(m.key);
+      const h = document.createElement("small"); h.textContent = m.hint;
+      wrap.appendChild(b); wrap.appendChild(h); menu.appendChild(wrap);
+    }
+    $("#missedBtn").disabled = (info.embed_label||"").indexOf("dense")<0 && !/MiniLM|mpnet/i.test(info.embed_label||"");
+    setCost(0);
+    const warn = info.init_error ? `  — engine fell back (${info.init_error})` : "";
+    status(`Loaded ${info.nodes} nodes · ${info.embed_label} · ${info.provider}` +
+           `${info.model?(":"+info.model):""} · ${info.dry?"free":"live"} · mode=${info.mode}` +
+           `${warn}.  Choose where to begin ↑`);
+  }catch(e){ status("Load failed: "+e.message, true); }
+  $("#load").disabled = false;
+}
+
+// ---- begin / advance -------------------------------------------------------
+function begin(start){
+  $("#menu").style.display = "none";
+  $("#paper").classList.remove("empty"); $("#paper").textContent = "";
+  currentText = "";
+  started = true;
+  for(const id of ["#steer","#steerBtn","#next","#newthread"]) $(id).disabled = false;
+  advance({action:"first", start});
+}
+
+async function advance(opts){
+  if(busy || !SID || (!started && opts.action!=="first")) return;
+  busy = true;
+  hidePop();
+  $("#branches").innerHTML = "";
+  status("…composing…");
+  const paper = $("#paper");
+  let streaming = false;
+  const stick = atBottom($("#stage"));
+  try{
+    await streamPost("/page", {
+      session: SID, action: opts.action, plan_id: opts.plan_id || null,
+      start: opts.start || "new",
+      wander: parseFloat($("#wander").value),
+      diffusing: $("#diffuse").checked,
+    }, {
+      start: () => { // new page region — append a separator if continuing
+        if(currentText){ paper.appendChild(document.createTextNode("\n\n")); }
+        streaming = true;
+        marker = paper.appendChild(document.createElement("span"));
+      },
+      frame: p => {            // full text-so-far → replace the live region
+        marker.textContent = p.text;
+        if(stick) $("#stage").scrollTop = $("#stage").scrollHeight;
+      },
+      done: p => {
+        marker.textContent = p.text;
+        currentText = p.text;       // expand math works on the last page only
+        renderTag(p);
+        renderBranches(p.branches);
+        setCost(p.cost);
+        status(`${p.mode} · ${p.recap||""}  —  choose a direction below ↓`);
+      },
+      error: p => { status(p.message, true); },
+    });
+  }catch(e){ status("Page failed: "+e.message, true); }
+  busy = false;
+}
+
+let marker = null;
+function renderTag(p){
+  const arrow = {open:"◉",dwell:"↻",move:"→"}[p.mode]||"·";
+  const sb = (p.steer_bucket && p.steer_bucket!=="none") ? "  ↳"+p.steer_bucket : "";
+  const coast = p.marker==="coast" ? "   ·coast (free)" : "";
+  $("#tag").textContent = `${arrow} ${p.node}${sb}${coast}`;
+}
+function renderBranches(branches){
+  const box = $("#branches"); box.innerHTML = "";
+  if(!branches || !branches.length) return;
+  const lbl=document.createElement("span"); lbl.className="dim"; lbl.textContent="Where next?";
+  box.appendChild(lbl);
+  for(const b of branches){
+    const btn=document.createElement("button");
+    btn.className = "b" + (b.ready?" ready":"") + (b.leap?" leap":"");
+    btn.textContent = (b.mode==="dwell"?"↻ ":"→ ") + b.label;
+    btn.onclick = () => advance({action:"plan", plan_id:b.plan_id});
+    box.appendChild(btn);
+  }
+}
+
+// ---- steering / transport --------------------------------------------------
+async function steer(){
+  const t = $("#steer").value.trim();
+  if(!t || !SID || busy) return;
+  $("#steer").value = "";
+  status("Steering → "+t);
+  try{ await jpost("/steer", {session:SID, text:t}); }
+  catch(e){ status("Steer failed: "+e.message, true); return; }
+  advance({action:"auto"});
+}
+
+// ---- select-to-expand ------------------------------------------------------
+function selectionCtx(){
+  const sel = window.getSelection();
+  if(!sel.rangeCount) return null;
+  const s = sel.toString();
+  if(s.trim().length < 8) return null;
+  const paper = $("#paper");
+  if(!paper.contains(sel.anchorNode)) return null;
+  const r = sel.getRangeAt(0);
+  const pre = document.createRange(); pre.selectNodeContents(paper);
+  pre.setEnd(r.startContainer, r.startOffset);
+  const start = pre.toString().length;
+  return {selected:s, before: currentText.slice(0,start), after: currentText.slice(start+s.length),
+          startStr: currentText.slice(0,start)};
+}
+let pendingSel = null;
+function maybeShowPop(){
+  if(busy || $("#dry").checked){ hidePop(); return; }
+  const ctx = selectionCtx();
+  if(!ctx){ hidePop(); return; }
+  pendingSel = ctx;
+  const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  const pop = $("#pop");
+  pop.style.display = "flex";
+  pop.style.left = Math.min(r.left, window.innerWidth-220) + "px";
+  pop.style.top  = (r.bottom + 6) + "px";
+}
+function hidePop(){ $("#pop").style.display = "none"; }
+
+async function doExpand(mode){
+  if(!pendingSel || busy) return;
+  const {selected, before, after, startStr} = pendingSel;
+  hidePop(); busy = true;
+  status(`…${mode} in place…`);
+  const paper = $("#paper");
+  const head = startStr, tail = after, sel0 = selected;
+  let acc = sel0;
+  try{
+    await streamPost("/expand", {session:SID, selected, before, after, mode}, {
+      frame: p => { acc = p.text; paper.textContent = head + acc + tail; },
+      done: p => { acc = p.text; currentText = head + acc + tail; paper.textContent = currentText;
+                   setCost(p.cost); status("Expanded in place — select more, or continue ↓"); },
+      error: p => { status(p.message, true); },
+    });
+  }catch(e){ status("Expand failed: "+e.message, true); }
+  busy = false;
+}
+
+// ---- missed connections ----------------------------------------------------
+async function showMissed(){
+  if(!SID) return;
+  status("Finding missed connections…");
+  try{
+    const {pairs, embed_label} = await jget(`/missed?session=${SID}&n=25`);
+    const box = $("#missed");
+    box.innerHTML = `<h3>✧ Missed connections <small class="dim">(${embed_label}; close but NOT linked)</small></h3>`;
+    if(!pairs.length) box.innerHTML += `<div class="p dim">none above threshold (or embeddings unavailable / TF-IDF active)</div>`;
+    for(const p of pairs){
+      const d=document.createElement("div"); d.className="p";
+      d.innerHTML = `<span class="s">${p.sim.toFixed(3)}</span>  ${p.title_a} <span class="dim">⇿</span> ${p.title_b}`;
+      box.appendChild(d);
+    }
+    const close=document.createElement("button"); close.textContent="Close"; close.style.marginTop="12px";
+    close.onclick=()=>{$("#overlay").style.display="none";};
+    box.appendChild(close);
+    $("#overlay").style.display="flex";
+    status("Missed connections — close but never wikilinked.");
+  }catch(e){ status("Missed failed: "+e.message, true); }
+}
+
+// ---- wiring ----------------------------------------------------------------
+$("#load").onclick = load;
+$("#next").onclick = () => advance({action:"auto"});
+$("#newthread").onclick = () => begin("surprise");
+$("#steerBtn").onclick = steer;
+$("#steer").addEventListener("keydown", e => { if(e.key==="Enter") steer(); });
+$("#missedBtn").onclick = showMissed;
+$("#wander").addEventListener("change", () => { if(SID) jpost("/wander",{session:SID,value:parseFloat($("#wander").value)}).catch(()=>{}); });
+$("#voice").addEventListener("change", async () => {
+  if(!SID) return;
+  try{ await jpost("/voice",{session:SID,name:$("#voice").value}); status("Voice → "+$("#voice").value+". Flow forward or steer to hear it."); }
+  catch(e){ status("Voice failed: "+e.message, true); }
+});
+$("#paper").addEventListener("mouseup", () => setTimeout(maybeShowPop, 0));
+document.addEventListener("mousedown", e => { if(!$("#pop").contains(e.target) && e.target!==$("#paper")) hidePop(); });
+$("#pop").querySelectorAll("button").forEach(b => b.onclick = () => doExpand(b.dataset.mode));
+$("#overlay").addEventListener("click", e => { if(e.target===$("#overlay")) $("#overlay").style.display="none"; });
+
+boot();
+</script>
+</body>
+</html>

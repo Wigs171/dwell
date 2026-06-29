@@ -1,0 +1,206 @@
+/* ============================================================================
+   Figure-aware page layouts for Dwell.
+
+   Nine pre-composed arrangements of body text + 1–3 vault figures inside a
+   FIXED page card (no vertical scroll at fit). Grounded in editorial/print
+   convention — see the layout research in DWELL_HANDOFF.md. Rendered by
+   PageLayout.svelte; the template id becomes a `.l-<id>` modifier.
+
+   GLOBAL (not Svelte-scoped) on purpose: PageLayout sets the modifier class
+   dynamically (`l-{layout}`) and the figure snippet sets figure classes
+   dynamically, neither of which Svelte's scoper can match statically.
+
+   Sizing rules of thumb baked in (from the research):
+     • A floated figure never exceeds ~55% of column width (keeps the text
+       gutter above readable line-length).
+     • No single image exceeds ~40% of card HEIGHT except the deliberate
+       full-height rail and the full-bleed hero — this is the rule that keeps
+       the no-scroll guarantee. Heights are capped in `em` (≈ relative to the
+       fit font) so they track the fit scale.
+     • Every image sits in a defined `aspect-ratio` frame with object-fit:cover,
+       so an unexpected ratio crops gracefully instead of resizing the layout.
+   ========================================================================== */
+
+.page-layout {
+  height: 100%;
+  box-sizing: border-box;
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--ink);
+  line-height: 1.6;
+}
+.page-layout p {
+  font-size: 1em;
+  line-height: 1.6;
+  margin: 0 0 0.72em;
+  text-align: justify;
+  -webkit-hyphens: auto;
+  hyphens: auto;
+}
+.page-layout p:last-child { margin-bottom: 0; }
+
+/* The image frame: a defined-ratio box that crops any aspect gracefully. The
+   caption is a sibling BELOW the frame so it never inflates the ratio box. */
+.page-layout figure { margin: 0; }
+.page-layout .frame {
+  overflow: hidden;
+  border-radius: 4px;
+  width: 100%;          /* fill the width; max-height crops via object-fit (no aspect-ratio width-shrink → no left-align) */
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+.page-layout .frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.page-layout figcaption {
+  font-size: 0.76em;
+  font-style: italic;
+  color: var(--meta);
+  line-height: 1.34;
+  margin-top: 0.34em;
+}
+/* Graceful degradation: a missing image collapses rather than leaving a hole. */
+.page-layout figure:has(img:not([src])),
+.page-layout figure:has(img[src=""]) { display: none; }
+
+/* Padded templates (single column / floats). Rail & hero manage their own
+   bleed and are intentionally excluded. */
+.l-top, .l-bottom, .l-side, .l-inset, .l-diagonal, .l-mosaic {
+  padding: 26px 32px;
+}
+
+/* 1 ── Top-anchored figure ────────────────────────────────────────────────
+   Full-width figure flush to the top, all text below. Unbreakable default;
+   best for landscape & wide images. */
+.l-top .fig-top { margin: 0 0 0.7em; }
+.l-top .fig-top .frame { aspect-ratio: 16 / 7; max-height: 15em; }
+
+/* 6 ── Bottom-anchored figure ─────────────────────────────────────────────
+   Mirror of #1. flex:1 on the text block keeps the figure pinned to the
+   bottom even when the text is short — no overflow. */
+.l-bottom { display: flex; flex-direction: column; }
+/* flex:1 fills the slack so the figure pins to the bottom — but NO min-height:0,
+   so when the font is zoomed past fit the body grows (never clips) and the card
+   scrolls instead of guillotining the text between the text box and the image. */
+.l-bottom .body { flex: 1 1 auto; }
+.l-bottom .fig-bottom { flex: 0 0 auto; margin: 0.75em 0 0; }
+.l-bottom .fig-bottom .frame { aspect-ratio: 16 / 7; max-height: 15em; }
+
+/* 2 ── Side column (floated figure) ───────────────────────────────────────
+   Figure floated to the top-right, text wraps left and below. The workhorse
+   single-image wrap; flatters portraits & squares. Needs ≥3 paragraphs or the
+   wrap orphans. shape-outside tightens the wrap and degrades to a plain float. */
+.l-side .fig-side {
+  float: right;
+  width: 42%;
+  margin: 0.15em 0 0.55em 1.1em;
+  shape-outside: inset(0 round 4px);
+}
+.l-side .fig-side .frame { aspect-ratio: 3 / 4; max-height: 23em; }
+
+/* 7 ── Inset thumbnail ────────────────────────────────────────────────────
+   Small corner figure, text-dominant. Lowest-risk float (small gap to fill).
+   A good palate-cleanser between image-rich pages. */
+.l-inset .fig-inset {
+  float: left;
+  width: 30%;
+  margin: 0.2em 1.1em 0.5em 0;
+}
+.l-inset .fig-inset .frame { aspect-ratio: 1 / 1; }
+
+/* 3 ── Two-image diagonal ─────────────────────────────────────────────────
+   Image A top-right, image B partway-down-left. The vertical offset (B placed
+   after the 2nd paragraph + clear:left) is essential — two floats at the same
+   height collapse the text channel to a sliver. Pair complementary shapes
+   (one landscape + one square/portrait). */
+.l-diagonal .fig-a {
+  float: right;
+  width: 42%;
+  margin: 0.1em 0 0.5em 1.1em;
+}
+.l-diagonal .fig-a .frame { aspect-ratio: 3 / 2; max-height: 13em; }
+.l-diagonal .fig-b {
+  float: left;
+  clear: left;
+  width: 44%;
+  margin: 0.45em 1.1em 0.55em 0;
+}
+.l-diagonal .fig-b .frame { aspect-ratio: 1 / 1; max-height: 14em; }
+
+/* 4 ── Magazine (3-column) ────────────────────────────────────────────────
+   The Swiss grid in action: justified body text flowing in THREE balanced
+   columns, with one image as a CENTERED feature spanning all columns in the
+   vertical middle — text flows in columns above and below it. Uses CSS
+   multicolumn, which keeps the body a single continuous text flow, so karaoke,
+   select-to-clarify and narration keep working, and pretext measures it as
+   total/3. The centred band suits wide/landscape images. */
+/* Plain block — NOT a flex/height-constrained container. A multicol with a
+   definite height overflows into extra columns sideways; letting it grow down
+   keeps it to exactly 3 columns and lets the column-span image span the true
+   full width (so it's symmetric = centred side-to-side). */
+.l-magazine { padding: 26px 30px; }
+.l-magazine .mag-cols { columns: 3; column-gap: 20px; }
+.l-magazine .mag-cols p { margin: 0 0 0.62em; }
+.l-magazine .mag-cols > p:first-child { margin-top: 0; }
+.l-magazine .mag-mid { margin: 0.2em 0 0.7em; break-inside: avoid; }   /* a column-WIDTH block in the flow, not a band */
+.l-magazine .mag-mid .frame { aspect-ratio: 3 / 4; }                  /* thin portrait — fits one column */
+
+/* 5 ── Tall portrait rail ─────────────────────────────────────────────────
+   A full-card-height image band beside a text column. THE template for tall
+   images that would overflow any horizontal slot — the rail is height-locked
+   so arbitrary tallness is absorbed by the crop. Caption overlays the foot of
+   the rail. */
+.l-rail { display: grid; grid-template-columns: 38% 1fr; height: 100%; }
+.l-rail .rail-fig { position: relative; height: 100%; }
+.l-rail .rail-fig .frame { height: 100%; border-radius: 0; }
+.l-rail .rail-fig figcaption {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  margin: 0;
+  padding: 0.5em 0.7em;
+  font-size: 0.72em; font-style: normal; color: #fff;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.62));
+}
+.l-rail .rail-text { padding: 26px 30px; overflow: hidden; }
+.l-rail .rail-text p:first-child { margin-top: 0; }
+
+/* 8 ── Editorial mosaic ───────────────────────────────────────────────────
+   A wide top banner + two floated detail images threaded by the text. The
+   richest, tightest layout — every image is height-capped and the third image
+   is optional. Use sparingly; never adjacent to another image-dense page. */
+.l-mosaic .banner { margin: 0 0 0.65em; }
+.l-mosaic .banner .frame { aspect-ratio: 21 / 6; max-height: 9em; }
+.l-mosaic .mbody { overflow: hidden; }
+.l-mosaic .fig-2 { float: right; width: 35%; margin: 0.1em 0 0.5em 1em; }
+.l-mosaic .fig-2 .frame { aspect-ratio: 4 / 3; }
+.l-mosaic .fig-3 { float: left; clear: left; width: 30%; margin: 0.35em 1em 0.5em 0; }
+.l-mosaic .fig-3 .frame { aspect-ratio: 1 / 1; }
+
+/* 9 ── Full-bleed hero — NOT for reading; this is the VAULT-SELECTION card.
+   Image fills the card; the vault title + blurb sit in a smooth bottom scrim.
+   The scrim is a SEPARATE masked layer: its blurred gradient fades in gradually
+   (no hard edge where the blur ends), and white drop-shadowed text stays legible
+   over ANY image regardless of theme. */
+.l-hero { position: relative; overflow: hidden; }
+.l-hero .hero-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.l-hero .hero-scrim {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 78%;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.86) 0%, rgba(0, 0, 0, 0.5) 38%, rgba(0, 0, 0, 0) 100%);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  /* fade the whole scrim (blur included) out toward the top → no visible line */
+  -webkit-mask-image: linear-gradient(to top, #000 42%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 42%, transparent 100%);
+}
+.l-hero .hero-body {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 30px 32px 26px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8), 0 2px 16px rgba(0, 0, 0, 0.5);
+}
+.l-hero .hero-body p { text-align: left; margin: 0 0 0.5em; }
+.l-hero .hero-body p:first-child { font-size: 1.5em; font-weight: 600; line-height: 1.2; margin-bottom: 0.35em; }  /* vault title */
+.l-hero .hero-cap { font-size: 0.74em; font-style: italic; color: rgba(255, 255, 255, 0.82); margin-top: 0.4em; }
