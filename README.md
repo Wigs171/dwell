@@ -9,7 +9,8 @@ fly in the voice, reading level, and form you choose, and you can *steer* where
 the thread goes next or let it wander. A companion **Learn** mode builds new
 vaults for you from your own files, links, or a topic, using an agent pipeline.
 
-> Dwell ships with a small, original **Biology 101** demo vault so you can try it
+> Dwell ships with two small, original demo vaults — **Biology 101** and a
+> Japanese-language **Cosmos** vault (perfect for showing off live translation) — so you can try it
 > the moment the server starts.
 
 ---
@@ -22,7 +23,7 @@ vaults for you from your own files, links, or a topic, using an agent pipeline.
 | `web/` | The frontend — Svelte 5 + Vite (TypeScript). The reading UI, themes, settings, narration, and the Learn screens. |
 | `compendium/` | The vault engine + ingest agents that **Learn** drives to build vaults. |
 | `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `loop`, `enrich`, `explore`, `split-book`. |
-| `vaults/` | Your knowledge bases. The bundled **`Biology 101 (Demo)`** vault lives here. |
+| `vaults/` | Your knowledge bases. Two bundled demos live here: **`Biology 101 (Demo)`** and **`Cosmos (Japanese Demo)`** (a Japanese-language vault for demoing live translation). |
 | `docs/` | Design docs and the [vault format spec](docs/VAULT_FORMAT.md). |
 | `tests/` | A smoke test for the server (`dwell_smoke.py`). |
 
@@ -70,7 +71,7 @@ python server/dwell_server.py          # or:  ./run.sh   (macOS/Linux)
 #                                       or:  server/Launch Dwell Server.bat  (Windows)
 ```
 
-Open **http://127.0.0.1:8000** — the Biology 101 demo vault is already there.
+Open **http://127.0.0.1:8000** — the bundled demo vaults (Biology 101 and a Japanese Cosmos vault) are already there.
 
 > **macOS / Linux note:** the frontend pins a Windows build of Vite's native
 > bundler binding (`@rolldown/binding-win32-x64-msvc`) to work around
@@ -159,8 +160,8 @@ serves in production and proxies to in dev.
 ## License
 
 - **Code:** [Apache-2.0](LICENSE).
-- **Demo vault content** (`vaults/Biology 101 (Demo)/`): original material released
-  under [CC BY 4.0](<vaults/Biology 101 (Demo)/CREDITS.md>). Vaults *you* build carry
+- **Demo vault content** (the `vaults/` demos): original, AI-generated material
+  released under CC BY 4.0 (see each vault's `CREDITS.md`). Vaults *you* build carry
   whatever license their sources do — that's on you.
 
 ---

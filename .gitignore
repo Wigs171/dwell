@@ -44,6 +44,7 @@ dwell-history.json
 # --- user-created vaults: keep ONLY the bundled demo ---
 vaults/*
 !vaults/Biology 101 (Demo)/
+!vaults/Cosmos (Japanese Demo)/
 
 # --- OS / editor ---
 .DS_Store
