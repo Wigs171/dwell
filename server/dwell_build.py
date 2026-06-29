@@ -293,16 +293,19 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     if o.max_pages:
         env["COMPENDIUM_MAX_PAGES_PER_INGEST"] = str(int(o.max_pages))
-    # Multi-provider: point the pipeline at the chosen endpoint. Non-Anthropic →
-    # the compat shim; Anthropic → the SDK at that base. No endpoint = default .env.
-    if o.endpoint_id:
-        from dwell_endpoints import resolve_endpoint
-        from compendium.llm.providers import detect_provider
-        ep = resolve_endpoint(o.endpoint_id)
-        if ep:
-            env["COMPENDIUM_LLM_BASE_URL"] = ep["base_url"]
-            env["COMPENDIUM_LLM_API_KEY"] = ep.get("api_key", "")
-            env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
+    # Point the pipeline at an LLM. Prefer the explicitly chosen endpoint; otherwise,
+    # when there's no ANTHROPIC_API_KEY in the environment (e.g. a fresh clone with no
+    # .env), fall back to the first configured + enabled endpoint so builds work out of
+    # the box. Non-Anthropic → the compat shim; Anthropic → the SDK at that base.
+    from dwell_endpoints import resolve_endpoint, first_enabled_endpoint
+    from compendium.llm.providers import detect_provider
+    ep = resolve_endpoint(o.endpoint_id) if o.endpoint_id else None
+    if ep is None and not env.get("ANTHROPIC_API_KEY"):
+        ep = first_enabled_endpoint()
+    if ep:
+        env["COMPENDIUM_LLM_BASE_URL"] = ep["base_url"]
+        env["COMPENDIUM_LLM_API_KEY"] = ep.get("api_key", "")
+        env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
 
     if is_research:
         # A research prompt → web-research it + the graph's open nodes, then ingest, via a

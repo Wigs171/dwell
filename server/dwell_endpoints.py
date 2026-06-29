@@ -85,6 +85,16 @@ def resolve_endpoint(ep_id: str) -> dict | None:
     return None
 
 
+def first_enabled_endpoint() -> dict | None:
+    """The first enabled endpoint with a base_url (incl. api_key). Used as a fallback
+    so a Learn build works out of the box when the user configured a provider but
+    didn't explicitly pick one. Internal server use only."""
+    for e in _read():
+        if e.get("enabled", True) and e.get("base_url"):
+            return e
+    return None
+
+
 # ---- endpoints -------------------------------------------------------------
 class EndpointIn(BaseModel):
     name: str = ""

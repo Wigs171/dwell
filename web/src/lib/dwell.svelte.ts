@@ -490,6 +490,12 @@ class DwellStore {
   }
   async loadEndpoints() {
     try { this.endpoints = (await api.endpoints()).endpoints; } catch { /* ignore */ }
+    // Default the ingest provider to the first enabled endpoint when none is chosen (or
+    // the chosen one is gone), so Learn builds have a provider without manual setup.
+    const enabled = this.endpoints.filter((e) => e.enabled);
+    if (!enabled.some((e) => e.id === this.learnEndpointId)) {
+      this.learnEndpointId = enabled[0]?.id ?? '';
+    }
   }
   async addEndpoint(name: string, baseUrl: string, key: string) {
     this.endpointsBusy = true;
