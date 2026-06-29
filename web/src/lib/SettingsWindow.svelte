@@ -198,7 +198,7 @@
                 {#if dwell.voices.vault_voices.length}<optgroup label="vault">{#each dwell.voices.vault_voices as v}<option value={v}>{v}</option>{/each}</optgroup>{/if}
                 <optgroup label="presets">{#each dwell.voices.presets as v}<option value={v}>{v}</option>{/each}</optgroup>
               </select>
-            {:else}<select id="vc" disabled><option>clean</option></select>{/if}</div>
+            {:else}<select id="vc" disabled><option>open a knowledge base to choose a voice…</option></select>{/if}</div>
           <div class="color-row"><label for="lvl">Level</label>
             <select id="lvl" value={dwell.level} onchange={(e) => dwell.setLevel(e.currentTarget.value)}>
               {#each READING_LEVELS as l (l.value)}<option value={l.value}>{l.label}</option>{/each}
