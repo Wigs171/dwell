@@ -52,7 +52,7 @@ Settings.
 Requires **Python 3.11+** and **Node 18+**.
 
 ```bash
-git clone <your-fork-url> dwell
+git clone https://github.com/Wigs171/dwell.git dwell
 cd dwell
 
 # 1. Python deps
