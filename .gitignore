@@ -3,6 +3,7 @@
 *.env
 !.env.example
 .dwell-*.json
+CLAUDE.local.md
 
 # --- python ---
 __pycache__/
