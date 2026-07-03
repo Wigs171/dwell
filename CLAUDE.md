@@ -9,14 +9,14 @@ in-app **Learn** builder that turns sources/prompts into a vault. See
 (CREED, ROADMAP, MERCURY_PROMPT_GUIDE, VAULT_FORMAT).
 
 > This root `CLAUDE.md` is guidance, **not** a vault. Vaults live under
-> `vaults/<name>/` and each carries its own `CLAUDE.md` (the vault schema +
-> "is-a-vault" marker). Vault discovery only scans `vaults/`, so this file is
+> `vaults/<name>/` and each carries its own `CLAUDE.md` (the vault schema —
+> optional since OKF support: a flat folder of frontmatter'd Markdown also loads). Vault discovery only scans `vaults/`, so this file is
 > never mistaken for one.
 
 ## Repo map
 - `cli.py` — builder CLI (`init` / `ingest` / `research` / `loop` / `split-book` / `explore` / `enrich`)
 - `compendium/` — vault engine + ingest agents (Router / PageWriter / Explorer / Reviewer)
-- `server/` — FastAPI app (`dwell_server.py`), reader engine (`dwell.py`), Learn builder (`dwell_build.py`, `dwell_learn.py`), endpoints/keys (`dwell_endpoints.py`), TTS (`dwell_tts.py`)
+- `server/` — FastAPI app (`dwell_server.py`), reader engine (`dwell.py`), Learn builder (`dwell_build.py`, `dwell_learn.py`), guided paths (`dwell_paths.py`), OKF export (`okf_export.py`), registry backfill (`backfill_registry.py`), endpoints/keys (`dwell_endpoints.py`), TTS (`dwell_tts.py`)
 - `web/` — Svelte 5 + Vite frontend; the `npm run build` output (`web/dist`) is served by the server
 - `vaults/` — bundled demo vaults
 - `docs/`, `tests/`

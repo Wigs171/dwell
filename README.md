@@ -134,7 +134,7 @@ Two ways:
   provider — see `.env.example`).
 
 See [docs/VAULT_FORMAT.md](docs/VAULT_FORMAT.md) for the on-disk format if you'd
-rather hand-author one (that's how the demo vault was made).
+rather hand-author one (that's how the demo vaults were made).
 
 ---
 
