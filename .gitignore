@@ -46,6 +46,7 @@ dwell-history.json
 vaults/*
 !vaults/Biology 101 (Demo)/
 !vaults/Cosmos (Japanese Demo)/
+!vaults/Cael Morren/
 
 # --- OS / editor ---
 .DS_Store
