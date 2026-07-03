@@ -644,6 +644,7 @@ class PagePlan:
     tween_t: float = 0.0      # TWEEN frame: interpolation position 0..1 between two keyframes (else 0)
     next_locked: bool = False # PATH page: the NEXT page is certainly `toward` → the close may lean
     ghost: str = ""           # GHOST page: the unwritten link id this threshold renders (else "")
+    canon: str = ""           # PATH page: the CANON SINK — established figures/elements, pinned (else "")
 
     @property
     def material(self) -> str:
@@ -666,6 +667,8 @@ class PagePlan:
             raw += f"|t{self.tween_t:.3f}"
         if self.ghost:        # each unwritten door is its own page (node alone won't do)
             raw += f"|gh|{self.ghost}"
+        if self.canon:        # a page rendered under a different sink is a different page
+            raw += "|c" + hashlib.sha1(self.canon.encode()).hexdigest()[:6]
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -1057,6 +1060,11 @@ class PathNavigator(Navigator):
         self._pool: list = []                   # tween material pool for the current corridor
         self._pool_key: tuple | None = None     # (a, b) the pool was built for
         self._tween_cursor = 0                  # sweep position within the pool
+        self._density_eff = self.tween_density  # per-corridor density (distance-aware)
+        # CANON SINK (StreamDiffusion V2's sink tokens): established figures/elements,
+        # first-seen order, pinned into every path page so the rolling tail/recap can't
+        # rotate identities out of existence. Fed by observe_canon() after each render.
+        self.canon: list[str] = []
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1102,6 +1110,57 @@ class PathNavigator(Navigator):
     def complete(self) -> bool:
         return self.i >= len(self.spine) - 1 and self._anchor_done()
 
+
+    _CANON_STOP = {"The", "A", "An", "And", "But", "For", "Nor", "Yet", "So", "In",
+                   "On", "At", "By", "It", "Its", "He", "She", "They", "We", "You",
+                   "His", "Her", "Their", "When", "Where", "What", "That", "This",
+                   "These", "Those", "There", "Then", "Now", "Here", "If", "As",
+                   "Of", "To", "From", "With", "Not", "No", "All", "Each", "Every"}
+
+    def observe_canon(self, text: str) -> None:
+        """Harvest ESTABLISHED elements from a rendered path page into the sink:
+        capitalized runs (1-3 words) appearing at least twice, kept in first-seen
+        order, capped - mechanical and $0. The sink is pinned into every later page
+        so identities persist beyond the rolling tail/recap window."""
+        if not text:
+            return
+        runs = re.findall(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,2})\b", text)
+        counts: dict[str, int] = {}
+        order: list[str] = []
+        for r in runs:
+            if r.split()[0] in self._CANON_STOP or len(r) < 4:
+                continue
+            if r not in counts:
+                order.append(r)
+            counts[r] = counts.get(r, 0) + 1
+        for r in order:
+            # multi-word names establish on 2 sightings; a lone capitalized word
+            # (often just a sentence-opener) must earn it with 3
+            need = 2 if " " in r else 3
+            if counts[r] >= need and r not in self.canon:
+                if any(r != c and r in c for c in self.canon):
+                    continue                     # "Maren" when "Maren Vote" is known
+                self.canon = [c for c in self.canon if not (c != r and c in r)]
+                self.canon.append(r)
+        self.canon = self.canon[:10]
+
+    def _corridor_density(self, a: str, b: str) -> int:
+        """Distance-aware tween density (V2's motion-aware noise): distant gates are
+        a bigger 'motion' and earn an extra in-between frame; near gates need fewer."""
+        base = self.tween_density
+        if base <= 0:
+            return 0
+        try:
+            sp = self.brain.space
+            sim = sp.cos(sp.vec(a), sp.vec(b))
+        except Exception:
+            return base
+        if sim < 0.35:
+            return base + 1
+        if sim > 0.65:
+            return max(1, base - 1)
+        return base
+
     def _tween_pool(self, a: str, b: str) -> list:
         """Material for the corridor a → b. A TWEEN is the motion BETWEEN two nodes, so
         its material draws from BOTH ends: what remains unread of `a`, then `b`'s facets.
@@ -1135,6 +1194,7 @@ class PathNavigator(Navigator):
                         self.rng.randrange(max(1, len(self._pool) // 2)), wild)
             self._pool_key = key
             self._tween_cursor = 0
+            self._density_eff = self._corridor_density(a, b)
         return self._pool
 
     def plan_auto(self) -> "PagePlan | None":
@@ -1144,8 +1204,10 @@ class PathNavigator(Navigator):
         # tween_density; then arrive at the next keyframe. Tweens dominate → the path FLOWS.
         if self.i + 1 < len(self.spine):
             nxt = self.spine[self.i + 1]
-            if self.confluence and self._tween_k < self.tween_density:
+            if self.confluence and self._tween_k < self.tween_density + 1:
                 pool = self._tween_pool(self.current, nxt)
+                if self._tween_k >= self._density_eff:
+                    return self._plan_at("move", nxt, 0)
                 if self._tween_cursor < len(pool):
                     return self._plan_tween(self.current, nxt,
                                             self._tween_cursor, self._tween_k + 1)
@@ -1164,8 +1226,8 @@ class PathNavigator(Navigator):
         pool = self._tween_pool(a, b)
         take, headings, chunks = _assemble_page(pool, start, budget=PAGE_BUDGET // 2)
         ta, tb = self.brain.nodes[a].title, self.brain.nodes[b].title
-        t = round(k / (self.tween_density + 1), 3)       # run-position → framing (not facet %)
-        locked = (k >= self.tween_density) or (start + take >= len(pool))
+        t = round(k / (self._density_eff + 1), 3)        # run-position → framing (not facet %)
+        locked = (k >= self._density_eff) or (start + take >= len(pool))
         return PagePlan(
             mode="bridge", node=a, title=f"{ta} → {tb}",
             facet_start=start, take=take, headings=[ta, tb],
@@ -1173,7 +1235,7 @@ class PathNavigator(Navigator):
             came_from=self.came_from, steer_bucket=self.steer_bucket(),
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
-            arc_outline=self._outline(self.i))
+            arc_outline=self._outline(self.i), canon="; ".join(self.canon))
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1197,6 +1259,7 @@ class PathNavigator(Navigator):
         plan.next_locked = bool(plan.toward) and (not self.confluence
                                                   or self.tween_density <= 0)
         plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
+        plan.canon = "; ".join(self.canon)      # the sink rides every path page
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
         # node once between them, and the arrival never re-reads tween material.
@@ -1240,8 +1303,9 @@ class PathNavigator(Navigator):
         UI renders '↻ Dwell here' / '→ {title}'."""
         nxt = self.spine[self.i + 1] if self.i + 1 < len(self.spine) else None
         if nxt is not None:
-            in_motion = (self.confluence and self._tween_k < self.tween_density
-                         and self._tween_cursor < len(self._tween_pool(self.current, nxt)))
+            pool = self._tween_pool(self.current, nxt)
+            in_motion = (self.confluence and self._tween_k < self._density_eff
+                         and self._tween_cursor < len(pool))
             if not in_motion:                   # the gate is next, and it is the only door
                 return [(self._plan_at("move", nxt, 0), self.brain.nodes[nxt].title)]
         opts: list = []
@@ -1261,6 +1325,26 @@ class PathNavigator(Navigator):
             opts.append((self._plan_ghost(ghosts[0]),
                          ghosts[0].replace("-", " ").title()))
         return opts
+
+
+    def peek_after(self, plan: "PagePlan") -> "PagePlan | None":
+        """What plan_auto would produce AFTER `plan` commits — WITHOUT mutating this
+        navigator (V2 pipelining: on a firm spine the sequence is knowable, so the
+        prefetcher can speculate two pages deep). Shallow-copies the navigator,
+        detaches history, and commits the plan on the copy."""
+        import copy
+        try:
+            c = copy.copy(self)
+            c.history = None
+            c.trail = list(self.trail)
+            c.visited = dict(self.visited)
+            c.canon = list(self.canon)
+            c.gates_cleared = list(self.gates_cleared)
+            c._pool = list(self._pool)
+            c.commit(copy.copy(plan))
+            return c.plan_auto()
+        except Exception:
+            return None
 
     def commit(self, plan: "PagePlan") -> None:
         if plan.mode == "bridge":               # a TWEEN frame — consumed a slice of the pool
@@ -2306,6 +2390,10 @@ class Renderer:
             path_frame = (
                 f"GUIDED PATH{where} — one connected journey toward: {plan.goal}. Write this "
                 f"material as a step that ADVANCES that goal; embody it, never announce it.\n\n")
+            if plan.canon:
+                path_frame += (
+                    f"ESTABLISHED so far (keep these stable — reuse them; never invent "
+                    f"replacements for what already exists): {plan.canon}\n\n")
             # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
             # job; a tween is motion between beats and doesn't need the outline's weight.
             if plan.arc_outline and plan.mode != "bridge":

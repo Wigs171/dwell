@@ -1314,6 +1314,8 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
     s.history.save()
     if plan.mode == "ghost" and plan.ghost and not s.renderer.dry:
         _stage_ghost_proposal(s, plan, text)
+    if plan.goal and hasattr(s.nav, "observe_canon"):
+        s.nav.observe_canon(text)               # feed the canon sink (V2 sink tokens)
     node = s.brain.nodes.get(plan.node)
     imgs = _page_images(s, node, plan)
     emit("done", {
@@ -1356,13 +1358,29 @@ def _schedule_prefetch(s: DwellSession) -> None:
         return
     tail, recap = s.tail, (s.nav.recap() if s.nav is not None else "")
 
+    # V2 corridor pipelining: on a PATH the sequence is knowable, so speculate one
+    # page further (tween k+1 / the gate) using the first speculation's tail.
+    plan2 = (s.nav.peek_after(plan)
+             if s.path is not None and hasattr(s.nav, "peek_after") else None)
+
     def work() -> None:
         with s.render_lock:
             if s.cache.get(key) is not None:
+                text = s.cache.get(key)
+            else:
+                try:
+                    text = s.renderer.render(plan, tail[-TAIL_CHARS:], recap, "")
+                    s.cache.put(key, text)
+                except Exception:
+                    return
+        if plan2 is None:
+            return
+        key2 = s.renderer.cache_key(plan2)
+        with s.render_lock:
+            if s.cache.get(key2) is not None:
                 return
             try:
-                text = s.renderer.render(plan, tail[-TAIL_CHARS:], recap, "")
-                s.cache.put(key, text)
+                s.cache.put(key2, s.renderer.render(plan2, text[-TAIL_CHARS:], recap, ""))
             except Exception:
                 pass
 

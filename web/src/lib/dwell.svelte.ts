@@ -301,6 +301,8 @@ class DwellStore {
     this.narrator.onState = (p) => { this.narrating = p; };
     this.narrator.onWord = (cs, ce) => { this.spoken = cs < 0 ? null : { key: this.narratingKey ?? -1, cs, ce }; };
     this.narrator.onEnd = () => this.onNarrationEnd();
+    // early-narration seam: remainder queued while the opening plays
+
     await this.narrator.init();
     this.ttsAvailable = this.narrator.available;
     this.ttsVoices = this.narrator.voices.length ? this.narrator.voices : [this.narrator.defaultVoice];
@@ -341,6 +343,47 @@ class DwellStore {
   // TTS-gated navigation: while a page is actively being read, queue the move and
   // run it when narration finishes; otherwise act immediately.
   private narrationActive(): boolean { return this.narrate && this.narrating; }
+
+  // ---- StreamDiffusion-V2 borrowings: early narration + SLO ----
+  #earlyKey: number | null = null;   // page key narrated early (opening only)
+  #earlyLen = 0;                     // chars of the opening already spoken
+  #earlyRemainder: { key: number; text: string; offset: number } | null = null;
+  #stablePrev = '';
+  #stableCount = 0;
+
+  // While a page is still diffusing, watch its OPENING: once the first ~260 chars
+  // are byte-stable across 3 consecutive frames, start narrating them (time-to-
+  // first-audio ~= V2's time-to-first-frame). The remainder is spoken from the
+  // same offsets when the page lands, so karaoke stays aligned.
+  private maybeEarlyNarrate(page: { key: number; text: string }, raw: string) {
+    if (!this.narrate || !this.narrator.available || this.narrating) return;
+    if (this.#earlyKey === page.key) return;
+    const cut = raw.slice(0, 320).lastIndexOf('. ');
+    if (cut < 120) { this.#stablePrev = ''; this.#stableCount = 0; return; }
+    const opening = raw.slice(0, cut + 1);
+    if (opening === this.#stablePrev) this.#stableCount++;
+    else { this.#stablePrev = opening; this.#stableCount = 1; }
+    if (this.#stableCount < 3) return;
+    this.#earlyKey = page.key;
+    this.#earlyLen = opening.length;
+    this.narratingKey = page.key;
+    void this.narrator.speak(opening, this.ttsVoice, this.ttsSpeed);
+  }
+
+  // Page landed: if we spoke the opening early, queue (or speak) the remainder at
+  // the right character offset. Diffusion may have revised the opening after we
+  // started — accept the seam; the remainder follows the FINAL text.
+  private finishEarlyNarration(page: { key: number; text: string }) {
+    this.#stablePrev = ''; this.#stableCount = 0;
+    if (this.#earlyKey !== page.key) return;
+    this.#earlyKey = null;
+    const rem = page.text.slice(this.#earlyLen);
+    if (!rem.trim()) return;
+    const item = { key: page.key, text: rem, offset: this.#earlyLen };
+    if (this.narrator.isPlaying) this.#earlyRemainder = item;
+    else void this.narrator.speak(item.text, this.ttsVoice, this.ttsSpeed, item.offset);
+  }
+
   requestAdvance(opts: AdvanceOpts) {
     if (this.narrationActive()) { this.queued = { kind: 'advance', opts }; this.setStatus('⏳ continues when narration finishes'); }
     else void this.advance(opts);
@@ -350,6 +393,11 @@ class DwellStore {
     else this.beginAt(seed);
   }
   private onNarrationEnd() {
+    if (this.#earlyRemainder) {            // finish the page before any advance
+      const r = this.#earlyRemainder; this.#earlyRemainder = null;
+      void this.narrator.speak(r.text, this.ttsVoice, this.ttsSpeed, r.offset);
+      return;
+    }
     const q = this.queued;
     this.queued = null;
     this.spoken = null;
@@ -953,11 +1001,12 @@ class DwellStore {
             idx = this.pages.length - 1;
             this.cursor = idx;          // deck follows to the freshly-composed page
           },
-          frame: (p) => { if (idx >= 0) this.applyText(this.pages[idx], p.text); },
+          frame: (p) => { if (idx >= 0) { this.applyText(this.pages[idx], p.text); this.maybeEarlyNarrate(this.pages[idx], p.text); } },
           done: (p) => {
             if (idx >= 0) {
               const v = this.pages[idx];
               this.applyText(v, p.text); v.live = false; v.marker = p.marker;
+              this.finishEarlyNarration(v);
               v.mode = p.mode; v.node = p.node; v.title = p.title; v.sources = p.sources ?? [];
               v.images = p.images ?? []; v.layout = p.layout ?? null; v.form = p.form ?? v.form;
               v.textFigure = p.text_figure ?? null;

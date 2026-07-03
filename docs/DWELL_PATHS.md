@@ -475,3 +475,29 @@ unit** (material from ≥2 anchors + goal, lives in neither node), its count is
 material-driven with tempo as the modulator, the near one-step lookahead is kept and the
 far horizon buffer deferred, and coherence is scoped to *plot* (reader-supplied) vs
 *substance* (confluence-supplied). PLANNED — nothing built yet. Update as slices land.*
+
+---
+
+## StreamDiffusion V2 borrowings (2026-07-03, arXiv 2511.07399)
+
+The creed borrowed Dwell's frame from StreamDiffusion v1 (pages = keyframes, tweens =
+in-between frames). V2's live-streaming upgrades map onto our tested pain points:
+
+1. **Canon sink** (← sink tokens in the rolling KV cache). The rolling window (tail +
+   recap) drifts: tested story paths rotated protagonists every beat. Fix: a small
+   ESTABLISHED ledger pinned into every path page beside the goal — figures/elements
+   extracted mechanically from rendered pages, first-seen order, capped — never rolled
+   out. Pages reuse established identities instead of inventing replacements.
+2. **Distance-aware corridors** (← motion-aware noise controller). "Motion" = semantic
+   distance between adjacent gates. Distant gates get more tween frames, near gates
+   fewer — density per corridor from embedding similarity, $0.
+3. **Narration-clocked prefetch** (← SLO-aware scheduling). The karaoke timeline IS the
+   per-frame deadline: the next page must be ready when the current one finishes
+   narrating. Under deadline pressure, degrade gracefully — prefetch at
+   reasoning_effort=low (our analog of cutting denoising steps) rather than stutter.
+4. **Corridor pipelining** (← pipeline parallelism). On a firm spine the remaining
+   sequence is known: speculate 2 pages deep on paths (tween k+1 while k narrates),
+   bounded because our "GPU" is API dollars and steering invalidates speculation.
+5. **Narrate-while-diffusing** (← sub-0.5s time-to-first-frame). Start TTS once the
+   opening of a refining page stabilizes across frames. Riskiest (diffusion revises
+   early text); gated behind a stability check.
