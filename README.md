@@ -9,9 +9,10 @@ fly in the voice, reading level, and form you choose, and you can *steer* where
 the thread goes next or let it wander. A companion **Learn** mode builds new
 vaults for you from your own files, links, or a topic, using an agent pipeline.
 
-> Dwell ships with two small, original demo vaults — **Biology 101** and a
-> Japanese-language **Cosmos** vault (perfect for showing off live translation) — so you can try it
-> the moment the server starts.
+> Dwell ships with three small, original demo vaults — **Biology 101**, a
+> Japanese-language **Cosmos** vault (perfect for showing off live translation), and
+> **Cael Morren**, a fiction world built for guided paths, the creativity dial, and
+> ghost doors — so you can try everything the moment the server starts.
 
 ---
 
@@ -82,7 +83,7 @@ python server/dwell_server.py          # or:  ./run.sh   (macOS/Linux)
 #                                       or:  server/Launch Dwell Server.bat  (Windows)
 ```
 
-Open **http://127.0.0.1:8000** — the bundled demo vaults (Biology 101 and a Japanese Cosmos vault) are already there.
+Open **http://127.0.0.1:8000** — the bundled demo vaults (Biology 101, the Japanese Cosmos vault, and the Cael Morren fiction world) are already there.
 
 > **macOS / Linux note:** the frontend pins a Windows build of Vite's native
 > bundler binding (`@rolldown/binding-win32-x64-msvc`) to work around
