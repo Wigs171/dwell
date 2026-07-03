@@ -7,6 +7,18 @@
 
 ---
 
+> **STATUS 2026-07-03 — shipped since this plan was drawn:** the `form` axis grew to
+> TWELVE forms (story/tutorial/brief/case/interview/debate/letters/chronicle joined
+> article/guided/qa/dialogue), arc-aware on paths via `_FORM_PHASES`; **Guided Paths**
+> (spine × tween corridors, generator, certainty-gated choice/lean); the **creativity
+> (dream) dial**; **ghost doors + write-back proposals** (the frontier reads and grows
+> the vault through the Learn gate); the **learn queue** (learned/pending sources,
+> backfill, per-source build selection, peek); **OKF read + export** (see
+> `DWELL_OKF.md`). Still open here: universal-ingest enrichment (`cli.py enrich`
+> sidecar), lens/length axes, Tier-2 views.
+
+---
+
 ## ✅ DONE — the `form` axis (Tier-1 transform) — shipped + validated 2026-06-21
 Output **form** is now a first-class re-pitch axis beside level and voice: `article`
 (house shape), `guided` ("Guided tour"), `qa`, `dialogue`. The *same* page re-pitches
