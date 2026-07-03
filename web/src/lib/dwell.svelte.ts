@@ -9,7 +9,7 @@ import { api } from './api';
 import { writeTheme, themeByName, isLightColor, DEFAULT_THEME, THEMES, THEME_BG, THEME_CYCLE, type Theme } from './themes';
 import { applyBgPattern, setEffectColor, setEffectIntensity, setEffectSize, applyFrosted, setCyclePalette } from './background';
 import { AudioNarrator } from './audio';
-import type { Branch, BuildSource, LearnSources, Mark, MissedPair, Note, PageView, QuizQuestion, SessionInfo, VaultInfo, VaultSource, VoiceInfo } from './types';
+import type { Branch, BuildSource, LearnSources, Mark, MissedPair, Note, PageView, PathInfo, PathProgress, QuizQuestion, SessionInfo, VaultInfo, VaultSource, VoiceInfo } from './types';
 import { parseMarks } from './marks';
 
 const ls = {
@@ -54,14 +54,21 @@ export const OUTPUT_FORMS: { value: string; label: string }[] = [
   { value: 'guided', label: 'Guided tour' },
   { value: 'qa', label: 'Q&A' },
   { value: 'dialogue', label: 'Dialogue' },
+  { value: 'story', label: 'Story' },
+  { value: 'tutorial', label: 'Tutorial' },
+  { value: 'brief', label: 'Brief' },
+  { value: 'case', label: 'Case study' },
+  { value: 'interview', label: 'Interview' },
+  { value: 'debate', label: 'Debate' },
+  { value: 'epistolary', label: 'Letters' },
+  { value: 'chronicle', label: 'Chronicle' },
 ];
 
 // Output language — the page's MEDIUM (a separate axis from voice/form/level). The same
 // vault is rendered in the target language, re-pitched in place. 'source' = no translation.
 // Free text also works server-side, so any language the model knows is reachable.
 export const LANGUAGES: { value: string; label: string }[] = [
-  { value: 'source', label: 'Original' },
-  { value: 'english', label: 'English' },
+  { value: 'source', label: 'English' },
   { value: 'spanish', label: 'Spanish' },
   { value: 'french', label: 'French' },
   { value: 'german', label: 'German' },
@@ -91,7 +98,7 @@ const MODEL_SHORT_MAP: Record<string, string> = {
 export const modelShort = (v: string) => MODEL_SHORT_MAP[v] ?? v ?? 'Sonnet 4.6';
 
 type NodeRow = { id: string; title: string; centrality: number; seen: number };
-type AdvanceOpts = { action: string; plan_id?: string; start?: string; seed?: string };
+type AdvanceOpts = { action: string; plan_id?: string; start?: string; seed?: string; path_id?: string };
 // A backed-out vault's live reading state, kept in memory so re-entering is instant:
 // the server session stays alive (its Navigator is right where you left it) and the
 // rendered pages/cursor/branches are restored verbatim — no brain reload.
@@ -158,6 +165,9 @@ class DwellStore {
   queued = $state<{ kind: 'advance'; opts: AdvanceOpts } | { kind: 'begin'; seed: string } | null>(null);
   popular = $state<NodeRow[]>([]);
   allNodes = $state<NodeRow[]>([]);   // full list, for search
+  paths = $state<PathInfo[]>([]);     // curated Paths for this vault (sidebar)
+  pathProgress = $state<PathProgress | null>(null);   // set while walking a Path, else null
+  dream = $state(0);                  // creativity dial 0..1 (active render value; server-authoritative)
   query = $state('');
 
   get allThemes(): Theme[] { return [...THEMES, ...this.customThemes]; }
@@ -401,7 +411,7 @@ class DwellStore {
     this.learnBusy = true;
     try {
       const r = await api.learnCreate(name, topic);
-      this.learnDraft = { vault: r.vault, name: r.name };
+      this.learnDraft = { vault: r.vault, name: r.name }; this.learnExcluded = []; this.learnIncluded = [];
       this.learnSources = r.sources;
       this.learnMode = 'new';
       this.learnHasCover = false;
@@ -414,7 +424,7 @@ class DwellStore {
     this.learnBusy = true;
     try {
       const r = await api.learnOpen(v.path);
-      this.learnDraft = { vault: r.vault, name: r.name };
+      this.learnDraft = { vault: r.vault, name: r.name }; this.learnExcluded = []; this.learnIncluded = [];
       this.learnSources = r.sources;
       this.learnMode = 'expand';
       this.learnHasCover = !!v.has_cover;
@@ -444,7 +454,7 @@ class DwellStore {
     try { this.learnSources = (await api.learnRemoveSource(this.learnDraft.vault, id)).sources; }
     catch (e) { this.setStatus('Remove failed: ' + msg(e), true); }
   }
-  learnDiscard() { this.learnDraft = null; this.learnSources = null; this.learnMode = 'new'; this.learnHasCover = false; }
+  learnDiscard() { this.learnDraft = null; this.learnSources = null; this.learnMode = 'new'; this.learnHasCover = false; this.learnExcluded = []; this.learnIncluded = []; }
 
   // ---- the ingest swarm (build) ----
   buildActive = $state(false);
@@ -490,12 +500,6 @@ class DwellStore {
   }
   async loadEndpoints() {
     try { this.endpoints = (await api.endpoints()).endpoints; } catch { /* ignore */ }
-    // Default the ingest provider to the first enabled endpoint when none is chosen (or
-    // the chosen one is gone), so Learn builds have a provider without manual setup.
-    const enabled = this.endpoints.filter((e) => e.enabled);
-    if (!enabled.some((e) => e.id === this.learnEndpointId)) {
-      this.learnEndpointId = enabled[0]?.id ?? '';
-    }
   }
   async addEndpoint(name: string, baseUrl: string, key: string) {
     this.endpointsBusy = true;
@@ -565,12 +569,30 @@ class DwellStore {
     this.learnModelMechanical = '';
     this.persistLearnSettings();
   }
+  // Pending-source selection: ids UNCHECKED in the Learn queue sit the next build out
+  // ('skipped') but stay saved in the draft for a later one.
+  learnExcluded = $state<string[]>([]);
+  learnToggleSource(id: string) {
+    this.learnExcluded = this.learnExcluded.includes(id)
+      ? this.learnExcluded.filter((x) => x !== id)
+      : [...this.learnExcluded, id];
+  }
+  // Vault-pending raw files (in raw/ but never ingested) are OPT-IN per build.
+  learnIncluded = $state<string[]>([]);
+  learnToggleInclude(id: string) {
+    this.learnIncluded = this.learnIncluded.includes(id)
+      ? this.learnIncluded.filter((x) => x !== id)
+      : [...this.learnIncluded, id];
+  }
+
   private buildOpts() {
     const ep = this.selectedLearnEndpoint;
     // With a non-Anthropic endpoint, an unset role must resolve to that endpoint's
     // first model — the Anthropic default model name wouldn't exist there.
     const mdl = (pick: string) => pick || (ep ? (ep.models[0] || null) : null);
     return {
+      exclude: this.learnExcluded,
+      include: this.learnIncluded,
       endpoint_id: this.learnEndpointId || null,
       max_cost: this.learnMaxCost > 0 ? this.learnMaxCost : null,
       total_cap: this.learnTotalCap > 0 ? this.learnTotalCap : null,
@@ -760,6 +782,37 @@ class DwellStore {
     if (!sid) return;
     try { this.allNodes = (await api.nodes(sid, 0)).nodes; } catch { /* ignore */ }
   }
+  async loadPaths() {
+    const sid = this.sid;
+    if (!sid) return;
+    try { this.paths = (await api.paths(sid)).paths; } catch { /* ignore */ }
+  }
+
+  // Generate a fresh, diverse-but-coherent path (wander→narrativize) and walk it.
+  // Different every call — the diversity is in the stochastic graph walk.
+  async generatePath() {
+    const sid = this.sid;
+    if (!sid || this.busy) return;
+    this.setStatus('✨ Wandering the vault to compose a path…');
+    try {
+      await api.generatePath(sid);      // stashes the spine on the session
+      this.startPath('__generated__');  // walk it (title/goal arrive with the first page)
+    } catch (e) {
+      this.setStatus('Generate failed: ' + msg(e), true);
+    }
+  }
+
+  // Walk a curated Path's frozen spine (its lens is applied server-side on start).
+  startPath(id: string) {
+    if (!this.sid) return;
+    this.started = true;
+    this.pages = [];
+    this.cursor = 0;
+    this.branches = [];
+    this.pathProgress = null;
+    this.resetQuiz();
+    void this.advance({ action: 'first', path_id: id });
+  }
 
   beginAt(seed: string) {
     if (!this.sid) return;
@@ -767,6 +820,7 @@ class DwellStore {
     this.pages = [];
     this.cursor = 0;
     this.branches = [];
+    this.pathProgress = null;        // seeding a free-wander thread leaves any Path
     this.resetQuiz();
     void this.advance({ action: 'first', seed });
   }
@@ -837,6 +891,8 @@ class DwellStore {
       this.query = '';
       void this.loadNodes();          // populate the sidebar's popular-nodes list
       void this.loadAllNodes();       // full list for search
+      void this.loadPaths();          // curated Paths for this vault
+      this.pathProgress = null;
       const warn = info.init_error ? ` — engine fell back (${info.init_error})` : '';
       this.setStatus(
         `Loaded ${info.nodes} nodes · ${info.embed_label} · ${info.provider}` +
@@ -856,6 +912,7 @@ class DwellStore {
     this.pages = [];
     this.cursor = 0;
     this.branches = [];
+    this.pathProgress = null;        // launch-menu threads are free-wander, not a Path
     this.resetQuiz();
     void this.advance({ action: 'first', start });
   }
@@ -883,7 +940,7 @@ class DwellStore {
       await api.streamPage(
         {
           session: sid, action: opts.action, plan_id: opts.plan_id ?? null,
-          start: opts.start ?? 'new', seed: opts.seed ?? null,
+          start: opts.start ?? 'new', seed: opts.seed ?? null, path_id: opts.path_id ?? null,
           wander: this.wander, diffusing: this.diffuse,
         },
         {
@@ -907,8 +964,17 @@ class DwellStore {
             }
             this.branches = p.branches;
             this.cost = p.cost;
-            this.setStatus(`${p.mode} · ${p.recap || ''} — choose a direction below ↓`);
+            if (p.path) this.pathProgress = p.path;   // curated-Path progress chip
+            if (typeof p.dream === 'number') this.dream = p.dream;   // reflect the active creativity dial
+            const pmsg = p.path
+              ? `${p.path.title} · step ${p.path.gate}/${p.path.gates}${p.path.complete ? ' · complete ✓' : ''}`
+              : `${p.mode} · ${p.recap || ''} — choose a direction below ↓`;
+            this.setStatus(pmsg);
             if (this.narrate) this.playCurrent();   // recliner: read the new page aloud
+          },
+          path_done: (p) => {                        // walked past the last gate
+            this.pathProgress = p;
+            this.setStatus(`${p.title} — complete ✓ (${p.gates}/${p.gates})`);
           },
           error: (p) => { this.setStatus(p.message, true); },
         },
@@ -1044,6 +1110,22 @@ class DwellStore {
     }
   }
 
+  // Creativity / 'dream' dial (0..1) — a separate axis: how much inventive license the
+  // render has (0 faithful … 1 dramatize). Paths default to a modest 0.35 so they read as
+  // narrative; this lets the reader push it either way. Re-pitched in place like the others.
+  async setDream(value: number) {
+    const v = Math.max(0, Math.min(1, value));
+    this.dream = v;
+    const sid = this.sid;
+    if (!sid) return;
+    try {
+      await api.setDream(sid, v);
+      this.queueAxisChange(`Creativity → ${Math.round(v * 100)}%`);
+    } catch (e) {
+      this.setStatus('Creativity failed: ' + msg(e), true);
+    }
+  }
+
   // Axis changes (voice / level / form / language) update the renderer server-side
   // immediately — that's FREE. The paid re-render is DEFERRED and BATCHED: mark the page
   // dirty here, and run a single repitch() when the reader clicks Apply or closes Settings.
@@ -1137,6 +1219,7 @@ class DwellStore {
             this.applyText(page, p.text); page.marker = p.marker; page.sources = p.sources ?? [];
             page.images = p.images ?? []; page.layout = p.layout ?? null; page.form = p.form ?? page.form;
             page.textFigure = p.text_figure ?? null;
+            if (typeof p.dream === 'number') this.dream = p.dream;
             this.cost = p.cost;
             this.setStatus('Re-pitched — read on ↓');
             if (wasNarrating) {                          // resume from ~the same sentence

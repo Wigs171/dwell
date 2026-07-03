@@ -3,6 +3,7 @@
   // (files / links / a research prompt), curate the source list. The ingest swarm (commit)
   // is Phase 3, so Build is still stubbed.
   import { dwell } from './dwell.svelte';
+  import { api } from './api';
   import BuildPanel from './BuildPanel.svelte';
 
   // create form
@@ -41,6 +42,34 @@
     const f = (e.currentTarget as HTMLInputElement).files?.[0];
     if (f && dwell.learnDraft) void dwell.setVaultCover(f, dwell.learnDraft.vault);
     if (coverInput) coverInput.value = '';
+  }
+
+  // Vault-pending raw files (already in raw/, never ingested — e.g. a backfilled
+  // marathon vault's remaining transcripts). Opt-IN per build, unchecked by default.
+  let vaultPending = $state<import('./types').VaultSource[]>([]);
+  $effect(() => {
+    const vp = draftVault;
+    if (!vp || dwell.learnMode !== 'expand') { vaultPending = []; return; }
+    api.vaultSources(vp).then((r) => {
+      vaultPending = r.sources.filter(
+        (s) => s.status === 'pending' && !['uploads', 'link', 'research'].includes(s.kind));
+    }).catch(() => (vaultPending = []));
+  });
+  const vid = (s: import('./types').VaultSource) => `vault:${s.kind}/${s.name}${s.exts[0] ? '.' + s.exts[0] : ''}`;
+
+  // Peek — view a pending upload's text to refresh yourself on what it is.
+  let peekId = $state<string | null>(null);
+  let peekText = $state('');
+  let peekLoading = $state(false);
+  async function togglePeek(name: string, id: string, kind = 'uploads') {
+    if (peekId === id) { peekId = null; return; }
+    peekId = id; peekLoading = true; peekText = '';
+    try {
+      const p = await api.sourcePeek(draftVault, kind, name);
+      peekText = p.text || p.note || '(empty)';
+      if (p.truncated) peekText += '\n\n… (truncated)';
+    } catch { peekText = '(could not read this source)'; }
+    peekLoading = false;
   }
 </script>
 
@@ -130,25 +159,67 @@
 
       {#if src}
         <div class="sources">
-          <div class="sec">Sources{src.files.length + src.links.length ? ` · ${src.files.length + src.links.length}` : ''}</div>
+          <div class="sec">Pending sources{src.files.length + src.links.length ? ` · ${src.files.length + src.links.length}` : ''}
+            <span class="sechint">checked = goes into the next build · unchecked stays saved for later</span></div>
           {#if !src.files.length && !src.links.length}
             <p class="empty">No sources yet. Add files or links above.</p>
           {:else}
             <ul>
               {#each src.files as f (f.id)}
-                <li class:dup={f.status === 'duplicate'}><span class="badge">file</span><span class="sn">{f.name}.{f.ext}</span>
+                <li class:dup={f.status === 'duplicate'} class:excluded={dwell.learnExcluded.includes(f.id)}>
+                  <input type="checkbox" class="inc"
+                         title={f.status === 'duplicate' ? 'already ingested — always skipped' : 'include in the next build'}
+                         checked={f.status !== 'duplicate' && !dwell.learnExcluded.includes(f.id)}
+                         disabled={f.status === 'duplicate'}
+                         onchange={() => dwell.learnToggleSource(f.id)} />
+                  <span class="badge">file</span>
+                  <button class="sn peekable" title="view this source" onclick={() => togglePeek(f.name, f.id)}>{f.name}.{f.ext}</button>
                   {#if f.status === 'duplicate'}<span class="dupbadge" title="identical to a source already ingested — it will be skipped at build">already ingested</span>{/if}
                   <span class="meta">{fmtSize(f.size)}</span>
                   <button class="rm" title="remove" onclick={() => dwell.learnRemoveSource(f.id)}>✕</button></li>
+                {#if peekId === f.id}
+                  <li class="peekrow">{#if peekLoading}<span class="meta">loading…</span>{:else}<pre class="peek">{peekText}</pre>{/if}</li>
+                {/if}
               {/each}
               {#each src.links as l (l.id)}
-                <li><span class="badge link">link</span><span class="sn">{l.name}</span>
+                <li class:excluded={dwell.learnExcluded.includes(l.id)}>
+                  <input type="checkbox" class="inc" title="include in the next build"
+                         checked={!dwell.learnExcluded.includes(l.id)}
+                         onchange={() => dwell.learnToggleSource(l.id)} />
+                  <span class="badge link">link</span>
+                  <a class="sn" href={l.name} target="_blank" rel="noreferrer" title="open the link to refresh yourself">{l.name}</a>
                   <button class="rm" title="remove" onclick={() => dwell.learnRemoveSource(l.id)}>✕</button></li>
               {/each}
             </ul>
           {/if}
-          {#if src.prompt.trim()}<p class="promptline"><span class="badge">prompt</span> {src.prompt}</p>{/if}
+          {#if src.prompt.trim()}
+            <p class="promptline">
+              <input type="checkbox" class="inc" title="run the research prompt in the next build"
+                     checked={!dwell.learnExcluded.includes('research')}
+                     onchange={() => dwell.learnToggleSource('research')} />
+              <span class="badge">prompt</span> {src.prompt}</p>
+          {/if}
         </div>
+        {#if vaultPending.length}
+          <div class="sources">
+            <div class="sec">In the vault, not yet learned · {vaultPending.length}
+              <span class="sechint">already in raw/ — check any to include them in this build</span></div>
+            <ul>
+              {#each vaultPending as s (s.kind + '/' + s.name)}
+                <li class:excluded={!dwell.learnIncluded.includes(vid(s))}>
+                  <input type="checkbox" class="inc" title="include in this build"
+                         checked={dwell.learnIncluded.includes(vid(s))}
+                         onchange={() => dwell.learnToggleInclude(vid(s))} />
+                  <span class="badge">{s.kind}</span>
+                  <button class="sn peekable" title="view this source" onclick={() => togglePeek(s.name, vid(s), s.kind)}>{s.name}</button>
+                </li>
+                {#if peekId === vid(s)}
+                  <li class="peekrow">{#if peekLoading}<span class="meta">loading…</span>{:else}<pre class="peek">{peekText}</pre>{/if}</li>
+                {/if}
+              {/each}
+            </ul>
+          </div>
+        {/if}
       {/if}
 
       <div class="actions">
@@ -218,4 +289,18 @@
   .discard { background: none; border: 1px solid var(--border); color: var(--meta); font-size: 12px; padding: 5px 11px; border-radius: 7px; cursor: pointer; }
   .discard:hover { color: var(--fg); border-color: var(--accent); }
   .note { font-size: 11.5px; color: var(--meta); }
+
+  /* pending-source selection + peek */
+  .sechint { font-size: 10.5px; color: var(--meta); text-transform: none; letter-spacing: 0; margin-left: 8px; font-weight: 400; }
+  .inc { accent-color: var(--accent); flex-shrink: 0; margin: 0; cursor: pointer; }
+  .inc:disabled { cursor: default; opacity: .45; }
+  li.excluded .sn, li.excluded .badge, li.excluded .meta { opacity: .45; }
+  button.sn, a.sn { background: none; border: none; padding: 0; text-align: left; text-decoration: none; cursor: pointer; font-family: inherit; }
+  button.sn:hover, a.sn:hover { color: var(--accent); text-decoration: underline; }
+  .peekrow { padding: 0 0 8px 26px; }
+  .peek {
+    margin: 4px 0 0; max-height: 260px; overflow-y: auto; white-space: pre-wrap;
+    font-size: 11.5px; line-height: 1.55; color: var(--fg); font-family: inherit;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  }
 </style>

@@ -130,6 +130,9 @@ which who whom whose what when where why how their there here he she they we you
 his her our们 also more most some such only own same other each any all both few many""".split())
 
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
+# OKF-style graph edge: an ordinary Markdown link to another concept FILE
+# ([text](relative/path.md) — never http(s)); the stem is the node identity.
+_MDLINK_RE = re.compile(r"\[[^\]]+\]\((?!https?://)([^)#\s]+\.md)\)", re.I)
 _SECTION_RE = re.compile(r"^##+\s+(.*)$", re.MULTILINE)
 
 _SKIP_HEADINGS = {"see also", "related pages", "sources", "bibliographic details",
@@ -409,6 +412,10 @@ class Brain:
         self.embed_label: str = ""
         self.voice_profiles: dict[str, str] = {}   # vault-shipped narrator personas
         self.voice_default: str | None = None
+        # GHOSTS — wikilink targets with NO page anywhere in the vault: the frontier of
+        # possibilities never explored (an open question in nonfiction, an unwritten
+        # room in fiction). ghost id → the nodes that mention it.
+        self.ghosts: dict[str, set[str]] = {}
 
     @classmethod
     def load(cls, vault: VaultPaths, embed_model: str | None = None,
@@ -447,11 +454,18 @@ class Brain:
         self.ids = list(self.nodes)
         node_set = set(self.ids)
         for n in self.nodes.values():
-            for m in _WIKILINK_RE.finditer(n.body):
-                tgt = m.group(1).strip().lower()
+            # Dwell wikilinks AND OKF-style Markdown links ([text](path.md)) both
+            # populate the graph — OKF conveys relationship in prose, identity by path,
+            # so the link target's STEM is the node id (DWELL_OKF.md, mapping table).
+            targets = [m.group(1).strip().lower() for m in _WIKILINK_RE.finditer(n.body)]
+            targets += [m.group(1).rsplit("/", 1)[-1][:-3].strip().lower()
+                        for m in _MDLINK_RE.finditer(n.body)]
+            for tgt in targets:
                 if tgt in node_set and tgt != n.id:
                     n.out_links.add(tgt)
                     self.indeg[tgt] += 1
+                elif tgt not in known:          # no page of ANY type → an unwritten door
+                    self.ghosts.setdefault(tgt, set()).add(n.id)
         self._build_space(vault, embed_model, progress)
         return self
 
@@ -612,7 +626,7 @@ class ReadingHistory:
 # ---------------------------------------------------------------------------
 @dataclass
 class PagePlan:
-    mode: str                 # "open" | "dwell" | "move"
+    mode: str                 # "open" | "dwell" | "move" | "bridge" (tween/confluence)
     node: str
     title: str
     facet_start: int
@@ -623,6 +637,13 @@ class PagePlan:
     steer_bucket: str
     steer_text: str = ""
     stance: str = ""          # only used to vary opening pages
+    goal: str = ""            # PATH page: the journey's goal (DWELL_PATHS.md); else "" = free-wander
+    arc: str = ""             # PATH page: position in the arc, e.g. "2 of 5" (else "")
+    toward: str = ""          # PATH page: the next gate's title — the known destination ahead (else "")
+    arc_outline: str = ""     # PATH page (tier 2): the whole beat sheet, current beat marked (else "")
+    tween_t: float = 0.0      # TWEEN frame: interpolation position 0..1 between two keyframes (else 0)
+    next_locked: bool = False # PATH page: the NEXT page is certainly `toward` → the close may lean
+    ghost: str = ""           # GHOST page: the unwritten link id this threshold renders (else "")
 
     @property
     def material(self) -> str:
@@ -635,6 +656,16 @@ class PagePlan:
         # the free cache hit. (`came_from` already distinguishes the common approaches.)
         raw = (f"{self.came_from}|{self.mode}|{self.node}|"
                f"{self.facet_start}|{self.take}|{self.steer_bucket}")
+        if self.goal:         # a path frame — keep it distinct per goal (append-only, so
+            raw += f"|g2|{self.goal}"  # non-path keys are byte-for-byte unchanged; g2 = the
+            if self.arc:      # 2026-07-03 lean/pool rework, retiring earlier path pages)
+                raw += f"|{self.arc}"   # arc-aware forms: same node, different beat = new page
+            if self.next_locked:        # a leaning close is a different page than an open one
+                raw += "|L"
+        if self.tween_t:      # each TWEEN position caches separately (else all N collapse to one)
+            raw += f"|t{self.tween_t:.3f}"
+        if self.ghost:        # each unwritten door is its own page (node alone won't do)
+            raw += f"|gh|{self.ghost}"
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -667,7 +698,7 @@ _OPEN_STANCES_FRESH = [
 _OPEN_STANCES_SEEN = [
     "The reader has wandered near this before — re-enter from a fresh angle and "
     "do not reintroduce the basics.",
-    "Return to this the way you'd pick up an old thread, sounding a familiar "
+    "Return to this the way you'd resume a familiar idea, sounding a familiar "
     "note in a new key.",
 ]
 
@@ -889,10 +920,48 @@ class Navigator:
             return (cid, sim) if sim >= LEAP_MIN_SIM else None
         return None
 
+    # --- ghost doors (the vault's unwritten frontier) --------------------
+    def _ghosts_here(self) -> list[str]:
+        """Unwritten links mentioned by the CURRENT node, most-mentioned first."""
+        g = [gid for gid, who in self.brain.ghosts.items() if self.current in who]
+        g.sort(key=lambda gid: -len(self.brain.ghosts[gid]))
+        return g
+
+    def _plan_ghost(self, ghost: str) -> PagePlan:
+        """A THRESHOLD page for an unwritten door: material = the passages across the
+        vault that mention the ghost (its entire existence so far). The reader stays
+        at the current node — a door is looked through, not moved through."""
+        title = ghost.replace("-", " ").title()
+        who = sorted(self.brain.ghosts.get(ghost, ()),
+                     key=lambda n: -self.brain.centrality(n))[:4]
+        needle = ghost.replace("-", " ").lower()
+        headings, chunks = [], []
+        for nid in who:
+            node = self.brain.nodes[nid]
+            pick = None
+            for h, m in node.facets():
+                low = m.lower()
+                if needle in low or f"[[{ghost}" in low:
+                    pick = m
+                    break
+            if pick is None and node.facets():
+                pick = node.facets()[0][1]
+            if pick:
+                headings.append(node.title)
+                chunks.append(f"(from “{node.title}”)\n{pick}")
+        return PagePlan(
+            mode="ghost", node=self.current, title=title,
+            facet_start=0, take=0, headings=headings,
+            chunks=[f"— every mention of “{title}” in this work; it has no page of "
+                    f"its own —", *chunks],
+            came_from=self.came_from, steer_bucket=self.steer_bucket(),
+            steer_text=self.steer_text, ghost=ghost)
+
     # --- reader-chosen branches -----------------------------------------
     def propose(self, k: int = 3) -> list[tuple[PagePlan, str]]:
         """Up to k directions as (plan, label), plus a 'leap' to a near-but-
-        unlinked node when one exists. Non-mutating; deterministic labels."""
+        unlinked node when one exists, plus at most ONE ghost door (an unwritten
+        link this node mentions). Non-mutating; deterministic labels."""
         opts: list[tuple[PagePlan, str]] = []
         if self.facet_cursor < len(self._facets):
             nxt = self._facets[self.facet_cursor][0]
@@ -916,11 +985,20 @@ class Navigator:
             cid = leap[0]
             opts.append((self._plan_at("move", cid, 0),
                          f"✧ unexpected link — {self.brain.nodes[cid].title}"))
+        ghosts = self._ghosts_here()
+        if ghosts:
+            g = ghosts[0]
+            opts.append((self._plan_ghost(g), g.replace("-", " ").title()))
         return opts
 
     # --- commit (mutating) ----------------------------------------------
     def commit(self, plan: PagePlan) -> None:
         self.tick += 1
+        if plan.mode == "ghost":                # looked through a door — didn't move
+            if not self.trail or self.trail[-1] != plan.title:
+                self.trail.append(plan.title)
+                self.trail = self.trail[-12:]
+            return
         if plan.mode in ("move", "open"):
             if plan.mode == "move":
                 self.came_from = self.current
@@ -941,6 +1019,281 @@ class Navigator:
             self.history.record_page(plan.node, self.facet_cursor)
 
 
+class PathNavigator(Navigator):
+    """Walks a FROZEN SPINE of anchor nodes instead of wandering the graph —
+    Phase 0 of Dwell Paths (see DWELL_PATHS.md).
+
+    It dwells through each anchor's facets, then MOVES to the next spine node;
+    `read` gates are implicit (a gate is cleared when the reader moves off its
+    node). Everything else — `_plan_at`, `recap`, `hint_for`, steering,
+    per-page render context — is inherited unchanged, so the whole render /
+    cache / repage / prefetch pipeline downstream doesn't know the difference.
+    Only the *choice of next node* changes: it's the spine successor, not a
+    semantic neighbour. `plan_auto()` returns None at end-of-spine (terminal);
+    the server guards for that.
+    """
+
+    def __init__(self, brain: "Brain", spine: list[str], rng: random.Random,
+                 history: "ReadingHistory | None" = None, *,
+                 goal: str = "", confluence: bool = True, dwell_cap: int = 0,
+                 intents: list[str] | None = None, tween_density: int = 3):
+        spine = [n for n in (spine or []) if n in brain.nodes]
+        seed = spine[0] if spine else None
+        super().__init__(brain, seed=seed, wander=0.0, rng=rng,
+                         history=history, start="new")
+        self.spine = spine
+        self._spine_index = {n: idx for idx, n in enumerate(spine)}  # node → keyframe index
+        self.i = 0                              # index of the last keyframe reached
+        self.gates_cleared: list[str] = []
+        self.goal = goal
+        # KEYFRAMES (nodes) are BEATS, hit once (dwell_cap 0). Between each pair of
+        # keyframes the motion is carried by TWEEN frames (confluences) — dense, so a
+        # path FLOWS instead of stepping node→node. tween_density = tweens per corridor.
+        self.confluence = confluence            # emit tween frames between keyframes
+        self.dwell_cap = max(0, dwell_cap)      # extra dwell pages on a keyframe (0 = beat hit once)
+        self.tween_density = max(0, tween_density)   # TWEEN frames per corridor (the motion)
+        self._tween_k = 0                       # tweens already shown in the current corridor
+        self._dwelt = 0                         # dwell pages spent on the current keyframe
+        self._pool: list = []                   # tween material pool for the current corridor
+        self._pool_key: tuple | None = None     # (a, b) the pool was built for
+        self._tween_cursor = 0                  # sweep position within the pool
+        # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
+        # page can foreshadow later beats and pay off earlier seeds. Authored paths may
+        # supply `intents`; otherwise derive them from each gate's summary.
+        if intents and len(intents) == len(spine):
+            self.intents = [str(x).strip() for x in intents]
+        else:
+            self.intents = [self._summary_line(n) for n in spine]
+
+    def _summary_line(self, node_id: str, n: int = 90) -> str:
+        """A one-line gist of a node — its summary's first sentence, else its title."""
+        node = self.brain.nodes.get(node_id)
+        if node is None:
+            return node_id
+        s = " ".join((node.summary or "").split())
+        if not s:
+            return node.title
+        first = s.split(". ")[0]
+        return (first if len(first) <= n else s[:n]).rstrip(" .")
+
+    def _outline(self, cur_j: int | None) -> str:
+        """The whole beat sheet as a compact numbered list, with the current beat and
+        the final payoff marked — the tier-2 arc awareness handed to every page."""
+        last = len(self.spine) - 1
+        lines = []
+        for k, node in enumerate(self.spine):
+            title = self.brain.nodes[node].title
+            gist = self.intents[k] if k < len(self.intents) else ""
+            tag = ""
+            if k == cur_j:
+                tag = "  ← you are here"
+            elif k == last:
+                tag = "  ← the arc lands here"
+            lines.append(f"{k + 1}. {title}" + (f" — {gist}" if gist else "") + tag)
+        return "\n".join(lines)
+
+    def _anchor_done(self) -> bool:
+        """The current node is 'covered' for AUTO flow — either its facets are
+        exhausted or we've hit the per-node dwell cap (keeps a path brisk so the
+        confluence + next gate arrive; the reader can still ↻ Dwell here via a branch)."""
+        return self.facet_cursor >= len(self._facets) or self._dwelt >= self.dwell_cap
+
+    @property
+    def complete(self) -> bool:
+        return self.i >= len(self.spine) - 1 and self._anchor_done()
+
+    def _tween_pool(self, a: str, b: str) -> list:
+        """Material for the corridor a → b. A TWEEN is the motion BETWEEN two nodes, so
+        its material draws from BOTH ends: what remains unread of `a`, then `b`'s facets.
+        (Sourcing only from `a`'s leftovers was a bug: on small-page vaults the keyframe
+        consumed every facet and NO tween ever fired.) Rebuilt when the corridor changes;
+        `_tween_cursor` sweeps it so each tween is a distinct, advancing slice."""
+        key = (a, b)
+        if self._pool_key != key:
+            rem = self._facets[self.facet_cursor:] if a == self.current else []
+            # Only b's BACK HALF: the gate page renders b's core (facet 0…) on arrival,
+            # so the approach must not spend it — tweens get the deep cuts, the beat
+            # keeps its payoff. (b's head in the pool = the gate re-reads tween content.)
+            fb = self.brain.nodes[b].facets()
+            self._pool = rem + fb[max(1, len(fb) // 2):]
+            # WILDCARD — serendipity injection: about half the corridors splice in ONE
+            # facet from elsewhere in the vault (off-spine, off-corridor), labeled as a
+            # side-current so the tween weaves it in briefly and returns to the motion.
+            others = [n for n in self.brain.ids
+                      if n not in (a, b) and n not in self._spine_index]
+            if others and len(self.brain.ids) > 8 and self.rng.random() < 0.5:
+                w = self.rng.choice(others)
+                wf = self.brain.nodes[w].facets()
+                if wf:
+                    wtitle = self.brain.nodes[w].title
+                    wild = (f"⟡ {wtitle}",
+                            f"⟡ a side-current from elsewhere in this world — "
+                            f"“{wtitle}” (weave one strand of it briefly into the "
+                            f"motion, then return):\n{wf[0][1]}")
+                    # early in the pool, or a short tween run never reaches it
+                    self._pool.insert(
+                        self.rng.randrange(max(1, len(self._pool) // 2)), wild)
+            self._pool_key = key
+            self._tween_cursor = 0
+        return self._pool
+
+    def plan_auto(self) -> "PagePlan | None":
+        # After the KEYFRAME beat, run TWEEN frames toward the next gate — each a distinct,
+        # advancing slice of the corridor pool (this node's remainder + the next gate's
+        # material), so the run carries progressive motion instead of repetition. Capped by
+        # tween_density; then arrive at the next keyframe. Tweens dominate → the path FLOWS.
+        if self.i + 1 < len(self.spine):
+            nxt = self.spine[self.i + 1]
+            if self.confluence and self._tween_k < self.tween_density:
+                pool = self._tween_pool(self.current, nxt)
+                if self._tween_cursor < len(pool):
+                    return self._plan_tween(self.current, nxt,
+                                            self._tween_cursor, self._tween_k + 1)
+            return self._plan_at("move", nxt, 0)         # arrive at the next keyframe
+        # last keyframe: dwell any remaining facets (dwell_cap), else done
+        if self.facet_cursor < len(self._facets) and self._dwelt < self.dwell_cap:
+            return self._plan_at("dwell", self.current, self.facet_cursor)
+        return None
+
+    def _plan_tween(self, a: str, b: str, start: int, k: int) -> "PagePlan":
+        """A TWEEN frame: the next slice of the corridor pool (both ends' material, from
+        `start`), rendered as forward MOTION toward keyframe `b`. The cursor advances each
+        tween, so a run carries DISTINCT, progressive content. `k` = the tween's ordinal
+        in the run (drives the EARLY/CROSSOVER/ARRIVING framing). The LAST tween of a run
+        knows the gate is certain next → next_locked lets the renderer lean into it."""
+        pool = self._tween_pool(a, b)
+        take, headings, chunks = _assemble_page(pool, start, budget=PAGE_BUDGET // 2)
+        ta, tb = self.brain.nodes[a].title, self.brain.nodes[b].title
+        t = round(k / (self.tween_density + 1), 3)       # run-position → framing (not facet %)
+        locked = (k >= self.tween_density) or (start + take >= len(pool))
+        return PagePlan(
+            mode="bridge", node=a, title=f"{ta} → {tb}",
+            facet_start=start, take=take, headings=[ta, tb],
+            chunks=[f"— continuing “{ta}”, in motion toward “{tb}” —", *chunks],
+            came_from=self.came_from, steer_bucket=self.steer_bucket(),
+            steer_text=self.steer_text, goal=self.goal, tween_t=t,
+            arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
+            arc_outline=self._outline(self.i))
+
+    def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
+        # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
+        # read as a connected journey, not isolated articles): the goal it serves, its
+        # position in the arc, and the next gate to lean toward. render() uses these.
+        plan = super()._plan_at(mode, node, start)
+        plan.goal = self.goal
+        j = self._spine_index.get(node)
+        if j is not None:                        # a gate (spine anchor)
+            plan.arc = f"{j + 1} of {len(self.spine)}"
+            plan.toward = (self.brain.nodes[self.spine[j + 1]].title
+                           if j + 1 < len(self.spine) else "")
+        else:                                    # a corridor node (off-spine drift)
+            nxt = self.spine[self.i + 1] if self.i + 1 < len(self.spine) else None
+            plan.arc = (f"between {self.i + 1} and {self.i + 2} of {len(self.spine)}"
+                        if nxt else f"{len(self.spine)} of {len(self.spine)}")
+            plan.toward = self.brain.nodes[nxt].title if nxt else ""
+        # With tweens on, a gate/drift page is followed by a tween run (the pool always
+        # has the next gate's material) — next is OPEN. Only with tweens off is the next
+        # gate certain to be the very next page.
+        plan.next_locked = bool(plan.toward) and (not self.confluence
+                                                  or self.tween_density <= 0)
+        plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
+        # Arriving at the gate the corridor tween'd toward: the approach spent the node's
+        # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
+        # node once between them, and the arrival never re-reads tween material.
+        if (self._pool_key and node == self._pool_key[1] and self._tween_cursor > 0
+                and plan.facet_start == 0):
+            boundary = max(1, len(self.brain.nodes[node].facets()) // 2)
+            if plan.take > boundary:
+                plan.take = boundary
+                plan.headings = plan.headings[:boundary]
+                plan.chunks = plan.chunks[:boundary]
+        return plan
+
+    def _choose_next(self) -> str:              # AUTO flow follows the firm spine
+        return self.spine[min(self.i + 1, len(self.spine) - 1)]
+
+    def _corridor_neighbors(self, nxt: str | None) -> list[str]:
+        """Off-spine nodes near the current one, biased toward the next gate — the
+        fluid corridor. Spine anchors are excluded so the reader drifts *between*
+        gates without skipping one; the next gate is offered separately."""
+        sp = self.brain.space
+        cur = self.current
+        heading = sp.vec(cur)
+        if nxt is not None:
+            heading = sp.blend(heading, sp.vec(nxt), 0.5)     # attractor: pull toward the gate
+        pool = dict(sp.neighbors(cur, topk=16))
+        for lid in self.brain.nodes[cur].out_links:
+            pool.setdefault(lid, 0.0)
+        spine_set = set(self.spine)
+        scored = sorted(
+            ((sp.cos(heading, sp.vec(c)), c) for c in pool
+             if c != cur and c != self.came_from and c not in spine_set),
+            reverse=True)
+        return [c for _, c in scored]
+
+    def propose(self, k: int = 3):
+        """Where next? — the reader's choices, gated by what the path NEEDS next.
+        If the next page MUST be the next keyframe (the tween run toward it is spent),
+        that gate is the ONLY choice — a beat can't be wandered around. While the
+        corridor is still in motion (tweens remain), the normal choices apply:
+        **↻ Dwell here** + a few **different nodes** to drift to within the corridor.
+        UI renders '↻ Dwell here' / '→ {title}'."""
+        nxt = self.spine[self.i + 1] if self.i + 1 < len(self.spine) else None
+        if nxt is not None:
+            in_motion = (self.confluence and self._tween_k < self.tween_density
+                         and self._tween_cursor < len(self._tween_pool(self.current, nxt)))
+            if not in_motion:                   # the gate is next, and it is the only door
+                return [(self._plan_at("move", nxt, 0), self.brain.nodes[nxt].title)]
+        opts: list = []
+        if self.facet_cursor < len(self._facets):
+            opts.append((self._plan_at("dwell", self.current, self.facet_cursor),
+                         self.brain.nodes[self.current].title))
+        seen = {self.current}
+        for cid in self._corridor_neighbors(nxt):             # drift within the corridor
+            if cid in seen:
+                continue
+            seen.add(cid)
+            opts.append((self._plan_at("move", cid, 0), self.brain.nodes[cid].title))
+            if len(opts) >= k + 1:
+                break
+        ghosts = self._ghosts_here()                          # one unwritten door, if any
+        if ghosts:
+            opts.append((self._plan_ghost(ghosts[0]),
+                         ghosts[0].replace("-", " ").title()))
+        return opts
+
+    def commit(self, plan: "PagePlan") -> None:
+        if plan.mode == "bridge":               # a TWEEN frame — consumed a slice of the pool
+            self._tween_k += 1
+            self._tween_cursor = plan.facet_start + plan.take  # advance → next tween is distinct
+            self.tick += 1
+            if not self.trail or self.trail[-1] != plan.title:
+                self.trail.append(plan.title); self.trail = self.trail[-12:]
+            if self.history:
+                self.history.record_page(plan.node, self.facet_cursor)
+            return
+        super().commit(plan)
+        if plan.mode in ("move", "open"):
+            # If the corridor's tweens spent this node's back half, the node is now fully
+            # covered (front on the beat, back on the approach) — mark it read so dwell
+            # doesn't re-serve tween material and the NEXT corridor's pool skips it.
+            if (self._pool_key and plan.node == self._pool_key[1]
+                    and self._tween_cursor > 0):
+                self.facet_cursor = len(self._facets)
+            self._dwelt = 0                     # fresh keyframe → reset dwell + tween counters
+            self._tween_k = 0
+        elif plan.mode == "dwell":
+            self._dwelt += 1
+        if plan.mode == "move":
+            j = self._spine_index.get(plan.node)
+            if j is not None and j > self.i:    # landed a KEYFRAME → pass keyframe(s) i..j-1
+                for g in range(self.i, j):
+                    self.gates_cleared.append(self.spine[g])
+                self.i = j
+            # else: corridor drift to an off-spine node — keyframe index unchanged
+            #        (the spine is firm; only landing a spine node advances it)
+
+
 # ---------------------------------------------------------------------------
 # Renderer — tween a whole page between keyframes (fast model, or dry fallback)
 # ---------------------------------------------------------------------------
@@ -950,54 +1303,60 @@ class Navigator:
 # goes in the system prompt (after the voice); _RULES + a silent self-check go at
 # the very end of the USER message, right before generation. Equally good for the
 # Anthropic path.
-_PERSONA = """You are the single narrating voice of a continuous, seamless reading of \
-a knowledge vault about {topic}. The reader is listening the whole way through; you \
-carry them.
+_PERSONA = """You are the single narrating voice of one continuous work about {topic} — \
+a book being written straight through, page after page, for a listener who hears every \
+word. To that listener there are no pages, no sections, no "earlier" — only your voice, \
+still talking.
 
-Write ONE page — about {n} words, {shape} The seam between pages lives in your FIRST \
-paragraph: open by tying back to where \
-the previous page left off — a brief connective bridge that carries the thread from what \
-just ended into this page — without restating it. Then develop the material and bring the \
-page to a natural close on its OWN terms. Do NOT end by reaching toward a particular next \
-topic: you don't control where the reader turns next, so a forced forward hand-off usually \
-points the wrong way. Write spoken prose — it is read aloud, so write for the ear. You MAY \
-use a little LIGHT markup (it is stripped before narration and only styles the page): \
-**bold** for a genuinely key term (rarely — a few per page at most), *italics* for the title \
-of a work or a word given gentle stress, and an occasional "## " section heading on its own \
-line where a page truly benefits (headings suit an article or guided tour, never a dialogue \
-or Q&A). Nothing else — no links, bullet/numbered lists, tables, blockquotes, or code; line \
-breaks to separate beats, questions, or dialogue turns are fine; and DON'T over-mark — most \
-sentences should have none. Never announce structure ("this page", "this section", \
-"let's look at"). Never restate what the previous page already said."""
+Write ONE page — about {n} words, {shape} Open mid-stride, carrying straight on from what \
+came just before without repeating any of it; develop the material; land the close on this \
+page's own terms. Spoken prose, written for the ear. Light markup only, and sparingly: \
+**bold** for a truly key term, *italics* for a work's title or gentle stress, an occasional \
+"## " heading where the form suits it (an article or guided tour — never dialogue or Q&A); \
+plain line breaks between beats or turns are fine. No lists, links, tables, blockquotes, \
+or code."""
 
 
 # The critical rules — last in the user message per Mercury's recency weighting. The
 # silent self-check uses the model's reasoning pass to catch slop AND the token-level
 # artifacts diffusion sometimes leaves (the garbled-sentence failure mode we saw).
+# Bumped whenever the render PROMPT is overhauled — folded into cache_key so the
+# persistent tween cache never replays pages written under a retired prompt style.
+_PROMPT_V = "p2"
+
 # The anti-slop core — reused by BOTH the page render and the in-place expand/simplify
 # rework, so every piece of generated prose obeys the same no-AI-tells rules.
-_ANTI_SLOP = """CRITICAL — write like a real writer, not an AI. Do NOT use these tells:
-• The fake-profound inversion — "not just X, but Y", "isn't merely X, it's Y", "more \
-than X, it is Y".
-• "What makes X so [remarkable/striking/fascinating] is…"; "What gives X its \
-[power/resonance/staying power]…".
-• Significance-editorializing — "stands as a testament", "lasting legacy", "continues \
-to resonate", "speaks to something deeper", "reminds us that", "it is no accident".
-• Filler — "it's worth noting", "crucially", "essentially", "ultimately", "indeed", \
-"in many ways", "at its core", "rich tapestry", "delve", "realm", "profound", \
-"intricate", "multifaceted", "underscore", "navigate", "weave".
-• Rule-of-three padding and rhetorical questions as transitions. A grand closing \
-sentence that restates the point with adjectives.
-• Formulaic openers — never begin a page with "The story of…", "The tale of…", "To \
-understand X, we must…", or "Let's begin with…" scaffolding. Open on the substance itself.
-Prefer concrete nouns and strong verbs; vary sentence length; cut any sentence that \
-would survive being cut."""
+_ANTI_SLOP = """CRITICAL craft rules — this must read as a working author's prose:
+• Concrete nouns, strong plain verbs, varied sentence length — let a short sentence land \
+next to a long one. Cut any sentence the page survives without.
+• State how one idea produces, contradicts, or extends the next in plain terms — never \
+dress the relation between ideas in a stock metaphor, and never name the act of connecting.
+• Say what happened and let it carry its own weight — no editorializing about significance \
+or legacy, no fake-profound inversion ("not just X, but Y"), no rhetorical questions as \
+transitions, no rule-of-three padding.
+• Open on the substance itself, never on scaffolding ("The story of…", "To understand X, \
+we must…"). Close on substance too: the last sentence is a fact or a live thought, not a \
+flourish that restates the point with adjectives."""
 
-# The full page-render rules = anti-slop core + the page-output/markup tail.
+# The full page-render rules = craft core + a silent self-check (the diffusion refine-in-
+# place pass makes a verify-and-rewrite instruction cheap and unusually effective — per
+# Inception's own guide). The known slop tokens live ONLY here, at the very tail, framed
+# as things to detect and remove — naming them mid-prompt as bans primes the model to
+# produce them (the pink-elephant failure; ~87% of ban violations are priming).
 _RULES = _ANTI_SLOP + """
 
-Output one finished page — complete sentences; only the light markup allowed above \
-(**bold**, *italics*, an occasional "## " heading), nothing else."""
+Before finishing, silently check the draft and rewrite whatever fails:
+[ ] reads straight on from what came before — no recap, and no reference to the text \
+itself (pages, sections, "as we saw", "earlier")?
+[ ] no sentence names the act of connecting ideas ("thread", "hinge", "bridge", "tie \
+together", "weave") — every relation stated directly instead?
+[ ] free of stock filler ("delve", "tapestry", "crucially", "it's worth noting", \
+"stands as a testament", "reminds us that")?
+[ ] every sentence complete and fully grammatical (articles and connectives intact), \
+opening and closing on substance, in the set voice, about the set length, only the \
+allowed light markup?
+
+Output only the finished page."""
 
 
 # Selectable narrator personas, as structured VOICE CARDS rather than adjective blurbs.
@@ -1171,16 +1530,29 @@ LEVELS = {
 # and level (how complex). The vault is unchanged; the renderer re-pitches the SAME
 # material into the chosen form, in place, cached per form. Forms change the rhetorical
 # MODE; light markup (bold/italics/headings, parsed client-side into marks) is a separate
-# axis the persona permits. 'article' is the house shape (the persona's default arc). A
-# "tutorial" is just `form=guided`; nothing is special-cased.
+# axis the persona permits. 'article' is the house shape (the persona's default arc).
+# On a guided path, forms with a _FORM_PHASES entry are ARC-AWARE (a tutorial's first
+# beat orients, its last consolidates) — this superseded the old "a tutorial is just
+# form=guided" stance: tutorial is its own doing-oriented form now.
 DEFAULT_FORM = "article"
 _ARTICLE_SHAPE = "as one continuous, flowing arc of roughly five paragraphs."
+# A tween is a short motion frame; keep the PERSONA cue neutral (no staging / no full-page
+# skeleton) so the tween-scaled FORM channel governs its surface grammar.
+_TWEEN_SHAPE = "as a short bridge of continuous forward motion."
 # Short shape cue placed in the PERSONA (system msg — sets the mode early); the FULL
 # directive below is reinforced near the END of the user message (recency weighting).
 _FORM_SHAPE = {
     "guided": "as a guided tour that builds the idea up in clear stages.",
     "qa": "as a scannable FAQ of question-and-answer beats.",
     "dialogue": "as a real back-and-forth dialogue between two unnamed voices.",
+    "story": "as an unfolding story — scene and moment, shown not summarized.",
+    "tutorial": "as a hands-on lesson the reader works through and comes away able to do.",
+    "brief": "as a decision-ready brief that leads with the point.",
+    "case": "as a case study — one concrete situation examined for its lesson.",
+    "interview": "as an interview — a curious host drawing out one knowledgeable voice.",
+    "debate": "as a debate between two unnamed positions that genuinely disagree.",
+    "epistolary": "as an exchange of letters between two unnamed correspondents.",
+    "chronicle": "as a chronicle — happenings told in the order they occurred.",
 }
 # Full per-form directives, grounded in the established conventions for each genre:
 # Diátaxis (explanation/tutorial vs how-to), the Socratic elenchus, FAQ/Q&A layout.
@@ -1221,6 +1593,87 @@ FORMS = {
         "interlocutor concedes…\", no names or speaker labels). Each turn is one short paragraph "
         "beginning with an em-dash (—); they simply alternate."
     ),
+    "story": (
+        "as an unfolding STORY — render the material as narrative scene, not exposition. Open "
+        "inside a concrete moment (a place, a figure, something already happening) and move "
+        "through TIME: action and consequence, cause leading to effect, grounded in what can be "
+        "seen, heard, and touched. Follow a vantage close enough that the reader LIVES the "
+        "material rather than being told it, and let meaning surface from what happens — never "
+        "stop to explain or summarize. Tell it as ITSELF, never as reportage: do not cite, "
+        "quote, or attribute the material's author, speaker, or sources (no \"he said\", no "
+        "\"X writes\", no \"according to…\") — whatever the material knows becomes what the "
+        "story's WORLD contains: its facts are events, its ideas live inside figures, places, "
+        "and happenings. When the material is abstract (an idea, a principle, a definition), "
+        "dramatize it: a concrete instance, a moment where it is at stake, someone meeting it "
+        "head-on — the idea carried by the scene, not stated beside it. Continuous past-tense "
+        "prose, scene over summary. (This is the SHAPE only; how much you may invent beyond "
+        "the material is set separately by the creativity dial — hold to it.)"
+    ),
+    "tutorial": (
+        "as a hands-on TUTORIAL — a lesson the reader works through and comes away able to DO. "
+        "Speak to the reader directly (\"you\"), imperative where they act. Show the move first "
+        "— one worked, concrete instance from the material — then walk the reader through doing "
+        "or deriving it themselves, and tell them how they'll know it worked. Explain only as "
+        "much as the doing requires; every new move rests on what the reader can already do "
+        "from earlier. When the material is not a literal procedure, teach the SKILL of using "
+        "it — applying the idea, deriving the result, recognizing the pattern in a new case. "
+        "The practice always works ON the material itself (list, reconstruct, derive, or "
+        "apply ITS content) — never a generic self-improvement exercise about the reader's "
+        "own life, and never invented busywork."
+    ),
+    "brief": (
+        "as a decision-ready BRIEF — bottom line up front. The FIRST sentence states the single "
+        "most important takeaway plainly, the sentence a busy reader could act on having read "
+        "nothing else. Then the few facts that carry it, each front-loaded and concrete; then "
+        "what it implies; then what remains open or worth watching. Short paragraphs, no "
+        "wind-up, no suspense — the page's conclusion is its opening line, and everything after "
+        "earns it."
+    ),
+    "case": (
+        "as a CASE STUDY — one concrete situation examined for its lesson. Open inside the "
+        "situation where the material is at stake (drawn from the material; a composite is "
+        "fine within the creativity dial's license): what was known, what was at risk. Walk its "
+        "decision points — what was chosen and why, what followed. Then step back and name the "
+        "general principle the case carries, briefly — the scene does the teaching, the "
+        "closing generalization only makes it portable. Situation first, lesson last."
+    ),
+    "interview": (
+        "as an INTERVIEW between an unnamed CURIOUS HOST and one KNOWLEDGEABLE VOICE. The host "
+        "asks the short, genuine questions a smart outsider would ask — reacting to what was "
+        "just said, pressing for the concrete detail, the surprising part, the stakes. The "
+        "voice answers with substance and texture from the material, in the first person. This "
+        "is NOT an interrogation and NOT a debate — the host draws out and sharpens, never "
+        "attacks. Write the actual spoken lines only: each turn one short paragraph beginning "
+        "with an em-dash (—), alternating, no names and no speaker labels."
+    ),
+    "debate": (
+        "as a DEBATE between TWO UNNAMED positions that genuinely disagree about the material — "
+        "a real tension in it, never a manufactured one. Each side argues FOR its own view at "
+        "full strength (the steelman, argued as conviction), rebutting the substance of the "
+        "other's last turn, never a caricature of it. Unlike a dialogue, BOTH voices assert — "
+        "there is no interrogator. End with the disagreement clarified, not adjudicated: what "
+        "each side would have to concede, and what evidence would settle it. Spoken lines only: "
+        "each turn one short paragraph beginning with an em-dash (—), alternating, no names, "
+        "no labels."
+    ),
+    "epistolary": (
+        "as LETTERS — an exchange between two unnamed correspondents who know each other well "
+        "and write with the intimacy of long acquaintance. Two or three letters per page: the "
+        "first writes of the matter at hand — news, worry, argument, wonder, grounded in the "
+        "material — and the next replies, answering what was actually said and adding its own. "
+        "First person throughout, each letter opening with a plain epistolary line (\"My "
+        "friend —\") and closing simply. The material arrives as lived correspondence: what "
+        "the writer saw, heard, fears, hopes — never a lecture folded into a letter."
+    ),
+    "chronicle": (
+        "as a CHRONICLE — the material told as happenings in the order they occurred, in the "
+        "plain register of an annalist. Each entry concrete: what happened, who, where, and "
+        "what it changed, told without commentary — let sequence itself carry the meaning. Use "
+        "only the time markers the material itself supports; where it gives none, order by "
+        "clear before-and-after and stay unspecific rather than inventing dates. Flowing prose "
+        "entries separated by line breaks, earliest first, ending on the latest state of "
+        "things."
+    ),
 }
 
 # Per-form SHAPE skeletons (slot-only, content-free). Appended to the form channel as a
@@ -1230,13 +1683,13 @@ FORMS = {
 # content can't bleed like that.) Article has no skeleton — it's the free-form default.
 _FORM_EXAMPLES = {
     "guided": (
-        "Shape to follow — these are EMPTY SLOTS: fill each with THIS page's own material; "
-        "never print the brackets or labels, and never invent a topic from them:\n"
-        "  ¶ orient — what this is and the question it answers\n"
-        "  ¶ ground — one concrete, foundational piece\n"
-        "  ¶ build — the core idea itself\n"
-        "  ¶ outward — what it implies and connects to\n"
-        "  ¶ situate — the bigger picture"
+        "Shape to follow — EMPTY SLOTS, one flowing paragraph each, NO headings and NO labels "
+        "(never print these bracketed cues, and never invent a topic from them):\n"
+        "  [¶ orient the reader — what this is and the question it answers]\n"
+        "  [¶ ground it — one concrete, foundational piece]\n"
+        "  [¶ build the core idea itself]\n"
+        "  [¶ follow it outward — what it implies and connects to]\n"
+        "  [¶ situate it in the bigger picture]"
     ),
     "qa": (
         "Shape to follow — EMPTY SLOTS: fill with THIS page's material; output the finished "
@@ -1257,6 +1710,233 @@ _FORM_EXAMPLES = {
         "  — [voice 2: turns that concession into a counterexample]\n"
         "  — [voice 1: a sharper, refined claim]"
     ),
+    "story": (
+        "Shape to follow — EMPTY SLOTS, continuous narrative prose, NO headings and NO labels "
+        "(never print these bracketed cues):\n"
+        "  [¶ open inside a concrete moment — a place, a figure, something already happening]\n"
+        "  [¶ let it develop through time — action and consequence, grounded in the senses]\n"
+        "  [¶ a turn — what shifts, what is revealed, what comes to be at stake]\n"
+        "  [¶ settle on the changed situation, its meaning left to the scene, not stated]"
+    ),
+    "tutorial": (
+        "Shape to follow — EMPTY SLOTS, flowing second-person prose, NO step numbers as "
+        "headings and NO labels (never print these bracketed cues):\n"
+        "  [¶ what you're about to be able to do — one concrete promise]\n"
+        "  [¶ show the move — one worked instance from the material]\n"
+        "  [¶ your turn — walk the reader through doing or deriving it]\n"
+        "  [¶ how you know it worked, and the one stumble to watch for]"
+    ),
+    "brief": (
+        "Shape to follow — EMPTY SLOTS, short front-loaded paragraphs, no labels (never print "
+        "these bracketed cues):\n"
+        "  [¶ the bottom line — one plain actionable sentence]\n"
+        "  [¶ the few facts that carry it, most load-bearing first]\n"
+        "  [¶ what it implies]\n"
+        "  [¶ what remains open or worth watching]"
+    ),
+    "case": (
+        "Shape to follow — EMPTY SLOTS, continuous prose, no labels (never print these "
+        "bracketed cues):\n"
+        "  [¶ the situation — what was known, what was at stake]\n"
+        "  [¶ the decision point — what was chosen, and why]\n"
+        "  [¶ what followed — the outcome, plainly told]\n"
+        "  [¶ step back — the general principle the case carries, briefly]"
+    ),
+    "interview": (
+        "Shape to follow — EMPTY SLOTS: an unnamed host and one knowledgeable voice, fill with "
+        "THIS page's material; never name them and never print the bracketed labels:\n"
+        "  — [host: the question a smart outsider would open with]\n"
+        "  — [voice: a substantive, textured answer]\n"
+        "  — [host: a follow-up reacting to that — the concrete detail, the stakes]\n"
+        "  — [voice: deeper, more specific]\n"
+        "  — [host: the question that widens it]\n"
+        "  — [voice: the answer that lands it]"
+    ),
+    "debate": (
+        "Shape to follow — EMPTY SLOTS: two UNNAMED positions, fill with THIS page's material; "
+        "never name them and never print the bracketed labels:\n"
+        "  — [position 1: its strongest honest case, argued as conviction]\n"
+        "  — [position 2: its own strongest case, engaging what 1 just claimed]\n"
+        "  — [position 1: rebuts the substance, concedes nothing cheap]\n"
+        "  — [position 2: rebuts in turn, sharpens the real disagreement]\n"
+        "  — [either: where it truly stands — what each would need to concede]"
+    ),
+    "epistolary": (
+        "Shape to follow — EMPTY SLOTS: two unnamed correspondents, fill with THIS page's "
+        "material; never print the bracketed cues:\n"
+        "  [letter — opens plainly (\"My friend —\"), writes of the matter as lived news or "
+        "worry, ends reaching toward the other]\n"
+        "  [reply — answers what was actually said, adds its own seeing, closes simply]"
+    ),
+    "chronicle": (
+        "Shape to follow — EMPTY SLOTS, prose entries separated by line breaks, earliest "
+        "first, no labels (never print these bracketed cues):\n"
+        "  [¶ the earliest happening — what, who, where]\n"
+        "  [¶ what followed from it]\n"
+        "  [¶ the turn — the happening that changed the course]\n"
+        "  [¶ the latest state of things, told as plainly as the first]"
+    ),
+}
+
+# How each FORM renders a TWEEN. A tween is a short MOTION frame between two keyframe beats,
+# not a beat of its own — so it can't wear the full keyframe skeleton (all five guided stages,
+# a page of Q&A pairs, a whole dialectic). But the form is the container for the ENTIRE path:
+# if the reader chose Q&A, a plain-prose tween in the middle would break it. So a tween speaks
+# the same form GRAMMAR, scaled down to one brief transition. Forms with no entry (article)
+# tween as plain flowing motion prose — the default, no form channel needed.
+_FORM_TWEEN = {
+    "guided": (
+        "as ONE or TWO connective paragraphs of flowing prose that carry the idea forward — "
+        "NOT the full staged lesson, and with NO stage names, labels, or headings of any kind."
+    ),
+    "qa": (
+        "as a SINGLE bridging exchange: one question in the reader's voice that arises from "
+        "where we just were and reaches toward what's next, then a one- or two-sentence answer "
+        "that moves us there. Exactly one question and one answer — never a list of Q&A pairs."
+    ),
+    "dialogue": (
+        "as a few alternating spoken turns (each a short paragraph beginning with —) in which "
+        "the two UNNAMED voices carry the conversation forward toward the next idea. No names, "
+        "no speaker labels, no third-person report — just the spoken lines, in motion."
+    ),
+    "story": (
+        "as a short continuous beat of the SAME scene moving forward — a few sentences of "
+        "action or moment carrying from where we are toward what comes next, grounded in the "
+        "senses. No scene-break, no summary, no stepping outside the story to explain."
+    ),
+    "tutorial": (
+        "as a short hand-off between steps, in flowing second-person prose: what the reader "
+        "can now do, carried straight into what that ability opens next — momentum between "
+        "lessons, never a new lesson and never a numbered step."
+    ),
+    "brief": (
+        "as ONE short front-loaded paragraph handing off: the point just settled, and the "
+        "open question it raises next — still bottom-line-first, no wind-up."
+    ),
+    "case": (
+        "as a short continuation of the SAME case in motion — consequence carrying toward the "
+        "next decision point. No stepping back to generalize yet; the lesson waits."
+    ),
+    "interview": (
+        "as a brief exchange (a turn or two, em-dash paragraphs) in which the host steers the "
+        "conversation toward the next subject and the voice begins to follow — motion, not a "
+        "full answer."
+    ),
+    "debate": (
+        "as a brief exchange (a turn or two, em-dash paragraphs) in which the dispute moves "
+        "onto its next ground — one side carries the disagreement forward, the other turns to "
+        "meet it there."
+    ),
+    "epistolary": (
+        "as the close of one letter reaching toward what comes next — a few first-person "
+        "lines, ending on the question or promise the next letter must answer."
+    ),
+    "chronicle": (
+        "as the passage of time itself — one or two entries' worth of prose carrying events "
+        "from where they stood toward what comes next, plainly, in order."
+    ),
+}
+
+# ARC-AWARE FORMS — on a guided path, a form can know WHERE it is in the journey and
+# shape the beat to it. Applied to spine GATES only (arc == "k of n"): corridor drift and
+# tweens are motion, not beats. One short phase note appended to the form channel; forms
+# without an entry render every beat the same (as before). The phase text is folded into
+# form_id (cache) via set_form.
+_FORM_PHASES = {
+    # CONTINUITY-MODULATED forms — their grammar is position-free by design (a brief
+    # always leads with its bottom line), so their phases only stop each beat from
+    # cold-opening like page one, and let the final beat speak for the whole journey.
+    "guided": {
+        "first": ("This beat OPENS the journey: give the full orientation — what the whole "
+                  "path is after, and why it matters — before grounding this first idea."),
+        "middle": ("The reader arrives already oriented by earlier beats: don't re-introduce "
+                   "the subject or the journey — orient only this beat's own idea, briefly, "
+                   "then ground and build as usual."),
+        "last": ("This is the FINAL beat: build this last idea, then let the closing "
+                 "wide-view take in the WHOLE journey — where everything the path built "
+                 "now sits."),
+    },
+    "qa": {
+        "first": ("This beat opens the journey: entry questions — what a newcomer to the "
+                  "whole subject asks first."),
+        "middle": ("Mid-journey questions: what someone who has followed the earlier beats "
+                   "asks NEXT — building on what's been answered, never re-asking the cold "
+                   "\"what is this?\" openers."),
+        "last": ("Closing questions: what it all comes to — the final answers speak for the "
+                 "whole journey, ending on why it mattered."),
+    },
+    "brief": {
+        "first": ("This is the FRAMING brief: its bottom line states what the whole journey's "
+                  "question is and why it presses now."),
+        "middle": ("A COMPONENT brief: its bottom line advances one piece of the overall "
+                   "assessment — assume the earlier briefs have been read."),
+        "last": ("The NET ASSESSMENT: its bottom line is the bottom line of bottom lines — "
+                 "the overall judgment the whole journey supports."),
+    },
+    # STRUCTURALLY arc-shaped forms — beginning/middle/end are different KINDS of page.
+    "story": {
+        "first": ("This beat OPENS the arc: establish the world of the story and set its "
+                  "tension moving — the situation the whole journey exists to resolve."),
+        "middle": ("This beat DEVELOPS the arc: it is the NEXT CHAPTER of the same story — "
+                   "carry forward the figures, setting, and stakes already established "
+                   "(never a fresh vignette), and move events forward through complication "
+                   "and consequence."),
+        "last": ("This beat LANDS the arc: the same story reaches its arrival — bring its "
+                 "established line to resolution, and let the resolution, not a moral, "
+                 "carry the journey's meaning."),
+    },
+    "tutorial": {
+        "first": ("This is the FIRST lesson of the journey: orient — say concretely what "
+                  "the reader will be able to DO by the end of the whole path, what it "
+                  "rests on, and give them one small first win now."),
+        "middle": ("This is a MIDDLE lesson: one new move, standing explicitly on what the "
+                   "reader can already do from the beats before."),
+        "last": ("This is the FINAL lesson: consolidate — have the reader run the whole "
+                 "skill end to end, name (as ability) what they now own, and where it "
+                 "leads."),
+        "dwell": ("This beat is PRACTICE: more reps of the current move on fresh aspects "
+                  "of the material — no new lesson."),
+    },
+    "case": {
+        "first": ("This beat OPENS the case: the situation in full — what was known, what "
+                  "was at stake. No lessons yet."),
+        "middle": ("This beat is INSIDE the case: a decision point and its consequences, "
+                   "carrying the situation forward."),
+        "last": ("This beat CLOSES the case: the outcome, and only now the general "
+                 "principle the whole case carries."),
+    },
+    "interview": {
+        "first": ("This is the OPENING of the interview: the host establishes who we're "
+                  "hearing from and why it matters, with the questions an outsider opens with."),
+        "middle": ("This is the HEART of the interview: follow-ups that press into the "
+                   "substance — the concrete, the surprising, the stakes."),
+        "last": ("This is the CLOSE of the interview: the widening questions — what it all "
+                 "comes to — and the voice's last, landed answer."),
+    },
+    "debate": {
+        "first": ("This beat is OPENING STATEMENTS: each position lays out its strongest "
+                  "case in full before the clash begins."),
+        "middle": ("This beat is the CLASH: direct rebuttal on the real point of "
+                   "disagreement, sharpened turn by turn."),
+        "last": ("This beat is CLOSING POSITIONS: each side's final, refined stand — what "
+                 "each would concede, what would settle it."),
+    },
+    "epistolary": {
+        "first": ("These are the FIRST letters: the correspondents take up the matter — why "
+                  "one writes, what presses on them."),
+        "middle": ("The correspondence DEEPENS: replies engage what was written, and the "
+                   "matter grows more urgent between them."),
+        "last": ("These are the LAST letters: the exchange arrives somewhere — what the "
+                 "correspondence has settled, and what it leaves between them."),
+    },
+    "chronicle": {
+        "first": ("This beat opens the chronicle: the beginnings — the earliest happenings "
+                  "from which the rest follows."),
+        "middle": ("This beat continues the chronicle: events unfolding in order, each "
+                   "carrying consequence into the next."),
+        "last": ("This beat closes the chronicle: the latest state of things, and how the "
+                 "long sequence came to rest there."),
+    },
 }
 
 
@@ -1268,7 +1948,6 @@ _FORM_EXAMPLES = {
 DEFAULT_LANGUAGE = "source"
 LANGUAGES = {
     "source": "",
-    "english": "English",
     "spanish": "Spanish", "french": "French", "german": "German",
     "italian": "Italian", "portuguese": "Portuguese", "mandarin": "Mandarin Chinese",
     "japanese": "Japanese", "korean": "Korean", "arabic": "Arabic",
@@ -1341,6 +2020,27 @@ class _SimpleCostMeter:
         return {"estimated_cost_usd": self._in * self._ir + self._out * self._or}
 
 
+def _strip_tail_echo(page: str, tail: str) -> str:
+    """Drop a verbatim tail echo from the page's opening. Mercury frequently begins by
+    copying the quoted CONTINUE FROM lines word-for-word despite the instruction (the
+    quote primes the continuation) — live-tested 2026-07-03: most path pages opened with
+    the previous page's closing sentences. Deterministic fix beats prompt-fighting:
+    if the page's first sentence(s) are (normalized) a suffix of the tail, cut them."""
+    if not page or not tail:
+        return page
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+    nt = norm(tail)
+    if not nt:
+        return page
+    best = 0
+    for m in re.finditer(r"[.!?…]+[\s”\"')\]]*", page[:600]):
+        np = norm(page[:m.end()])
+        if len(np) >= 25 and nt.endswith(np):
+            best = m.end()
+    return page[best:].lstrip(" \n") if best else page
+
+
 class Renderer:
     def __init__(self, topic: str, dry: bool, voice: str = DEFAULT_VOICE,
                  vault_voices: dict | None = None, provider: str | None = None,
@@ -1353,6 +2053,7 @@ class Renderer:
         self.set_level(level)
         self.set_form(form)
         self.set_language(language)
+        self.set_dream(0.0)
         # Mercury (Inception text-diffusion) is the ONLY reading engine — there is no
         # alternative to swap in. The key may come from the UI (Settings → Read) or .env.
         self._mercury_key = mercury_key or ""
@@ -1439,11 +2140,14 @@ class Renderer:
         self.form_directive = FORMS[self.form]                          # full spec → form channel
         self.form_shape = _FORM_SHAPE.get(self.form) or _ARTICLE_SHAPE  # short cue → persona
         self.form_example = _FORM_EXAMPLES.get(self.form, "")           # slot-only skeleton
-        # Cache id hashes the directive+skeleton (parity with voice_id) so editing a form's
-        # wording busts stale caches; default 'article' stays bare so old caches still hold.
+        self.form_phases = _FORM_PHASES.get(self.form, {})              # arc-aware beats (paths)
+        # Cache id hashes the directive+skeleton+phases (parity with voice_id) so editing a
+        # form's wording busts stale caches; default 'article' stays bare so old caches hold.
+        _phase_text = "".join(v for _, v in sorted(self.form_phases.items()))
         self.form_id = "article" if self.form == DEFAULT_FORM else (
             "f-" + self.form + "-" + hashlib.sha1(
-                (self.form_directive + self.form_example).encode()).hexdigest()[:6])
+                (self.form_directive + self.form_example + _phase_text)
+                .encode()).hexdigest()[:6])
 
     def set_language(self, language: str) -> None:
         """Switch the output LANGUAGE — the page's medium, orthogonal to voice/form/level.
@@ -1458,16 +2162,34 @@ class Renderer:
         self.language_id = ("source" if self.language == DEFAULT_LANGUAGE
                             else "lang-" + _steer_slug(self.language))
 
+    def set_dream(self, value: float) -> None:
+        """Creativity / 'dream' dial (0..1) — how much inventive license the render has.
+        0 = faithful conveyance (invent nothing beyond the material; the study default).
+        ~0.3 = creative telling (facts stay true, but invent framing/imagery/analogy so a
+        page reads as narrative, not summary). ~0.7+ = dramatize (the material is canon for
+        an invented scene). Orthogonal to voice/form/level; scales prompt license AND
+        sampling temperature. Cached per bucket."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            v = 0.0
+        self.dream = max(0.0, min(1.0, v))
+        self.dream_id = "" if self.dream <= 0 else f"dream{int(round(self.dream * 20))}"
+
     def cache_key(self, plan: PagePlan) -> str:
         """Voice + form + level + language + plan — each axis keeps its own rendered pages.
-        Default form / level / language are omitted so existing caches stay valid."""
-        parts = [self.voice_id]
+        Default form / level / language are omitted so existing caches stay valid.
+        _PROMPT_V busts the persistent cache when the render prompt itself is overhauled
+        (v2 = the 2026-07 slim rewrite: positive craft rules + tail self-check)."""
+        parts = [_PROMPT_V, self.voice_id]
         if self.form != DEFAULT_FORM:
             parts.append(self.form_id)
         if self.level != DEFAULT_LEVEL:
             parts.append(self.level)
         if self.language != DEFAULT_LANGUAGE:
             parts.append(self.language_id)
+        if self.dream > 0:
+            parts.append(self.dream_id)
         parts.append(plan.key())
         return ":".join(parts)
 
@@ -1482,33 +2204,158 @@ class Renderer:
         not by leaning the ending toward a predicted next page the reader may skip."""
         if self.dry:
             return self._dry(plan)
+        # TWEEN position phrase — a tween is a MOTION frame between two keyframes; where it
+        # sits in the run (early / crossover / arriving) shapes how it reads.
+        _ta = plan.headings[0] if plan.headings else plan.title
+        _tb = plan.headings[-1] if len(plan.headings) > 1 else plan.title
+        _t = plan.tween_t
+        if _t and _t < 0.34:
+            _tween_pos = (f"EARLY in the motion from “{_ta}” toward “{_tb}” — still mostly in "
+                          f"“{_ta}”’s world, the first pull toward “{_tb}” just beginning")
+        elif _t and _t < 0.67:
+            _tween_pos = (f"at the CROSSOVER between “{_ta}” and “{_tb}” — the two ideas meeting, "
+                          f"one giving way to the other")
+        else:
+            _tween_pos = (f"ARRIVING at “{_tb}” from “{_ta}” — mostly “{_tb}” now, “{_ta}” receding")
         instr = {
             "open": (f"Open the stream on {plan.title}. This is the very FIRST page — "
-                     f"begin fresh; there is NO previous page, so do not bridge back or "
-                     f"reference any earlier discussion. {plan.stance}"),
+                     f"nothing comes before it; begin fresh. {plan.stance}"),
             "dwell": (f"Stay with {plan.title} and go deeper — do NOT re-introduce "
                       "it; continue as if mid-conversation."),
-            "move": (f"Glide from the previous page into {plan.title} so the shift "
-                     "feels inevitable rather than announced."),
+            "move": (f"Glide into {plan.title} from what came just before, so the "
+                     "shift feels inevitable rather than announced."),
+            "bridge": (f"This is a TWEEN — a frame of MOTION between two beats, not a topic. "
+                       f"You are {_tween_pos}."),
+            "ghost": (f"This page stands at an UNWRITTEN DOOR: “{plan.title}” is named "
+                      f"throughout this work but has no page of its own — the material "
+                      f"below is every glimpse of it that exists. Render the THRESHOLD: "
+                      + ("dream the room through its doorway — build the page the "
+                         "mentions imply, inventing its texture but never contradicting "
+                         "what they establish; let it read as something glimpsed, not "
+                         "settled." if self.dream > 0 else
+                         "map the edge honestly — what this work already implies about "
+                         "it, and what remains genuinely unwritten; never invent facts "
+                         "to fill the gap, and let the open questions stand as open.")),
         }[plan.mode]
         steer_phrase = plan.steer_text or (plan.steer_bucket
                                            if plan.steer_bucket != "none" else "")
         steer_block = (f"THE READER JUST STEERED: \"{steer_phrase}\". Treat this as "
                        "the controlling direction of this page — angle the material "
                        "toward it, lead into it early, and follow whatever connects. "
-                       "If the material only brushes it, foreground that thread "
+                       "If the material only brushes it, foreground that connection "
                        "anyway.\n\n" if steer_phrase else "")
-        # The seam is built RETROSPECTIVELY (the opening ties back to the known
-        # previous page), never prospectively — we can't lean the ending toward a
-        # next page the reader hasn't chosen yet. `next_hint` is intentionally no
-        # longer used in the prompt (the predicted page still drives prefetch).
-        close_line = ("Bring THIS page to a clean, natural close on its own material — "
-                      "stop when the thought is finished. Do NOT tee up, announce, or lean "
-                      "toward whatever page might come next; you don't know which way the "
-                      "reader will go. And do NOT cap the page with a grand summarizing "
-                      "flourish (\"stands as a testament\", \"a reminder that\", \"remains "
-                      "a testament to\", \"continues to resonate\") — just land it.\n\n")
+        # The seam is built RETROSPECTIVELY only (the opening ties back to the KNOWN previous
+        # page). A path must NOT foreshadow a specific next page: the reader chooses via
+        # branches, so any named "next" is a promise they can break (and do — jarring). A
+        # path page instead leans on the GOAL (which every next node serves) and simply
+        # leaves the thread open — momentum without a broken promise.
+        # ARC POSITION — computed once for the close and (below) the form's phase note.
+        # Spine gates carry arc == "k of n"; corridor drift ("between i and j…") and
+        # tweens ("tween k · …") don't parse and stay position-free. The FINAL gate flips
+        # the close: every earlier beat holds the line open, but the journey must END —
+        # a mid-journey close on the last beat would leave every path without an ending
+        # (and fight any arc-aware form's "land it" phase).
+        _arc_pos = None
+        if plan.goal and plan.mode != "bridge":
+            _m = re.match(r"(\d+) of (\d+)$", plan.arc or "")
+            if _m:
+                _k, _n = int(_m.group(1)), int(_m.group(2))
+                _arc_pos = "first" if _k <= 1 else ("last" if _k >= _n else "middle")
+        if plan.goal:
+            if _arc_pos == "last":
+                close_line = ("This is the JOURNEY'S FINAL beat: land it. Bring the goalward "
+                              "line of thought to its arrival and let the whole journey end "
+                              "with weight — settled on substance, teeing up nothing.\n\n")
+            elif plan.next_locked and plan.toward:
+                # The next page is FORCED (the gate) — a lean here is a promise that
+                # cannot be broken, so the close MAY reach toward it by name. It still
+                # must not pre-tell the gate's substance: arrival does the revealing.
+                close_line = (f"The next page is CERTAIN: “{plan.toward}” comes next and "
+                              f"cannot be skipped. End leaning into that arrival — let the "
+                              f"close reach toward “{plan.toward}” — but never pre-tell its "
+                              f"substance; the arrival itself does the revealing.\n\n")
+            elif plan.mode == "bridge" and plan.toward:
+                # Mid-run tween: the page IS motion toward the gate (named throughout),
+                # but more motion comes before it lands — keep the arrival unspent.
+                close_line = (f"You are MID-MOTION toward “{plan.toward}”: end with the "
+                              f"pull still strong and the arrival unspent — more motion "
+                              f"comes before “{plan.toward}” lands, so never pre-tell what "
+                              f"it holds.\n\n")
+            elif plan.toward:
+                # The gate WILL come, but maybe not next (the reader can drift) — so its
+                # pull may shape the close, but naming it as next would be a breakable
+                # promise (the original forward-lean failure).
+                close_line = (f"You are MID-JOURNEY: end with the goalward line of thought "
+                              f"still open — not wrapped up as a finished piece. The journey "
+                              f"bends toward “{plan.toward}” ahead: let that pull be felt in "
+                              f"how the close points, without naming it or promising it as "
+                              f"the next page (the reader may drift first).\n\n")
+            else:
+                close_line = ("You are MID-JOURNEY: end with the goalward line of thought "
+                              "still open — not wrapped up as a finished piece, and not "
+                              "promising any specific next page (the reader chooses where "
+                              "to go).\n\n")
+        else:
+            close_line = ("Close on this page's own material — finish the thought and stop. "
+                          "You don't know where the reader turns next, so lean nowhere.\n\n")
+        # PATH FRAME — tells the page it's one beat of a goal-directed journey (not a
+        # standalone article). This + the forward-lean close are what make a path cohere.
+        path_frame = ""
+        if plan.goal:
+            where = f" (beat {plan.arc})" if plan.arc else ""
+            path_frame = (
+                f"GUIDED PATH{where} — one connected journey toward: {plan.goal}. Write this "
+                f"material as a step that ADVANCES that goal; embody it, never announce it.\n\n")
+            # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
+            # job; a tween is motion between beats and doesn't need the outline's weight.
+            if plan.arc_outline and plan.mode != "bridge":
+                path_frame += (
+                    f"THE ARC (the whole shape — use it silently, never narrate it):\n"
+                    f"{plan.arc_outline}\n"
+                    f"PLANT a detail a later beat can pay off; harvest what an earlier beat "
+                    f"planted.\n\n")
         guide = "; ".join(plan.headings[:4]) or plan.title
+        # A confluence/bridge frame SYNTHESIZES across anchors; a normal frame retells one
+        # node's material in facet order. (DWELL_PATHS.md — the confluence is the unit.)
+        # The invention clause loosens with the DREAM dial: at 0 the facts AND telling stay
+        # bound to the material; above 0, facts stay canon but the telling gets license.
+        invent = ("invent no facts beyond the material" if self.dream <= 0
+                  else "keep the facts true to the material — invent the connective telling (see CREATIVITY)")
+        invent_page = ("invent nothing beyond it" if self.dream <= 0
+                       else "keep the facts true to the material — the telling is yours (see CREATIVITY)")
+        if plan.mode == "bridge":
+            # A TWEEN is a SHORT motion frame (~half a keyframe), the felt movement between
+            # beats — not a summary of either node. Keyframes carry the substance. (Its
+            # word count lives in the persona's {n}, switched below — stated once.)
+            task_line = (f"NOW: {instr} Render the felt movement between the two ideas — the "
+                         f"transition itself, weighted to where you are, never a recap of "
+                         f"either node; paraphrase, {invent}. Flowing PARAGRAPHS of full "
+                         f"grammatical sentences (a tween is prose, never a stack of "
+                         f"one-line fragments). The horizon of this page is “{_tb}”: "
+                         f"approach it, never pass it — whatever lies beyond it belongs "
+                         f"to later pages.\n\n")
+        elif plan.mode == "ghost":
+            task_line = (f"NOW: {instr} Draw ONLY on the mentions above — they are all "
+                         f"that exists of this subject; paraphrase, {invent_page}.\n\n")
+        else:
+            task_line = (f"NOW: {instr} Retell the material above, touching in order on "
+                         f"[{guide}]; paraphrase rather than quote, {invent_page}.\n\n")
+        # CREATIVITY (dream) directive — placed late (recency) so it can license invention
+        # over the default faithful stance. Two bands: creative telling vs full dramatize.
+        dream_directive = ""
+        if self.dream > 0:
+            pct = int(round(self.dream * 100))
+            if self.dream < 0.66:
+                dream_directive = (
+                    f"\n\nCREATIVITY (dial {pct}%): the material's FACTS are canon; the TELLING "
+                    f"is yours. Invent framing, analogy, and concrete illustration not in the "
+                    f"source, so this reads as narrative rather than summary — every image "
+                    f"earned, the craft rules above still binding.")
+            else:
+                dream_directive = (
+                    f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
+                    f"dramatize it. Invent situation, viewpoint, brief characters that bring "
+                    f"the ideas to life as story, never contradicting the material's facts.")
         # STYLE CHANNELS — voice / form / level are independent axes that must BLEND, not
         # override one another. They're statistically correlated, so a "loud", checkable
         # axis (reading level, form) tends to swamp the "quiet" one (voice) — which is why
@@ -1517,39 +2364,62 @@ class Renderer:
         # unstable axis the model drifts away from; (3) state an explicit priority so
         # nothing dominates by accident. Voice is ALWAYS present; form/level only when
         # non-default. (Voice also leads the system message — primacy + recency bracket.)
+        # ARC PHASE — an arc-aware form shapes the beat to `_arc_pos` (gates only; drift
+        # and tweens are motion, not beats). A tutorial's dwell = practice, if defined.
+        phase_note = ""
+        if self.form_phases:
+            if plan.goal and plan.mode == "dwell" and "dwell" in self.form_phases:
+                phase_note = "\n" + self.form_phases["dwell"]
+            elif _arc_pos:
+                phase_note = "\n" + self.form_phases[_arc_pos]
         channels = [f"<voice>VOICE (hold this): {self.voice_anchor}</voice>"]
         if self.form_directive:
-            form_ch = f"FORM — render this whole page {self.form_directive}"
-            if self.form_example:
-                form_ch += "\n" + self.form_example
-            channels.append(f"<form>{form_ch}</form>")
+            if plan.mode == "bridge":
+                # A tween keeps the form's GRAMMAR but scaled to a short motion frame — the
+                # full keyframe skeleton (staged lesson, page of Q&A) doesn't belong on a
+                # bridge and, for 'guided', leaks its stage names as literal headers.
+                tween_form = _FORM_TWEEN.get(self.form)
+                form_ch = (f"FORM — this page is a short BRIDGE between beats; render it "
+                           f"{tween_form}") if tween_form else ""
+            else:
+                form_ch = f"FORM — render this whole page {self.form_directive}"
+                if self.form_example:
+                    form_ch += "\n" + self.form_example
+                form_ch += phase_note
+            if form_ch:
+                channels.append(f"<form>{form_ch}</form>")
         if self.level_directive:
             channels.append(f"<reading_level>{self.level_directive}</reading_level>")
         if self.language_directive:                      # medium — lead the channels list
             channels.insert(0, f"<language>{self.language_directive}</language>")
         lang_clause = (" The whole page — every channel above — is written in the target "
                        "LANGUAGE." if self.language_directive else "")
+        # The channel-arbitration rule only earns its words when axes can actually clash
+        # (a form or level is active alongside the voice); voice-only renders skip it.
+        arbitration = ""
+        if self.level_directive or any(c.startswith("<form>") for c in channels):
+            arbitration = ("\nKeep the channels separate: READING LEVEL governs sentence "
+                           "length and vocabulary and is non-negotiable; FORM governs "
+                           "structure; VOICE governs diction, imagery, rhythm and stance "
+                           "ONLY. If they pull apart, hold the level, keep the form, and "
+                           "let the voice flex within them.")
         axes_block = (
-            "\n\n— STYLE CHANNELS (blend these independent axes; do not let one override "
-            "another) —\n" + "\n".join(channels) +
-            "\nKeep the channels separate: READING LEVEL governs sentence length and "
-            "vocabulary and is non-negotiable; FORM governs structure; VOICE governs "
-            "diction, imagery, rhythm and stance ONLY — never raise vocabulary or "
-            "complexity to fit the voice. If they pull apart, hold the reading level, keep "
-            "the form, and let the voice flex within them." + lang_clause
+            "\n\n— STYLE CHANNELS (independent axes; blend them) —\n"
+            + "\n".join(channels) + arbitration + lang_clause
         )
         user = (
-            f"THREAD SO FAR: {recap or '(just beginning)'}\n\n"
-            f"PREVIOUS PAGE ended — your FIRST paragraph bridges from this into the new "
-            f"material (tie the two together across the seam, then move on; never repeat it):\n"
-            f"\"{tail or '(this is the very first page — just begin, with no back-reference)'}\"\n\n"
+            f"CONTEXT SO FAR (silent — never quote or mention it): "
+            f"{recap or '(just beginning)'}\n\n"
+            f"CONTINUE FROM (carry straight on from this — your first words begin AFTER its "
+            f"last sentence, never by repeating it):\n"
+            f"\"{tail or '(the very beginning — just start)'}\"\n\n"
+            f"{path_frame}"
             f"<material>\n{plan.material}\n</material>\n\n"
             f"{steer_block}"
-            f"NOW: {instr} Retell the material above as about {PAGE_WORDS} words, "
-            f"touching in order on [{guide}]; "
-            f"paraphrase, don't quote wholesale, invent nothing beyond it.\n\n"
+            f"{task_line}"
             f"{close_line}"
             f"{_RULES}"
+            f"{dream_directive}"
             f"{axes_block}"
         )
         # Persona/style first (cache-friendly, static); reading level also seeded here
@@ -1558,32 +2428,38 @@ class Renderer:
                        if self.level_directive else "")
         lang_block = (f"<language>{self.language_directive}</language>\n\n"
                       if self.language_directive else "")
+        _bridge = plan.mode == "bridge"
+        _shape = _TWEEN_SHAPE if _bridge else self.form_shape
+        _n = max(120, PAGE_WORDS // 2) if _bridge else PAGE_WORDS
         system = (f"<voice>\n{self.voice_directive}\n</voice>\n\n" + lang_block + level_block
                   + _PERSONA.format(topic=self.topic or "this subject",
-                                    n=PAGE_WORDS, shape=self.form_shape))
+                                    n=_n, shape=_shape))
         # Mercury (diffusion) occasionally "starves" the answer and returns an empty
         # completion — most often on the densest prompts (e.g. the scholar level). Retry
         # once at a LOWER reasoning effort (what the empty-completion error advises) so a
         # transient miss self-heals instead of surfacing as "[render failed]".
+        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)   # dream warms sampling too
         last_exc: Exception | None = None
         for attempt in range(2):
             try:
                 self.cost_tracker.check_budget()
                 text, in_tok, out_tok = self._complete(
                     system, user, on_stream=on_stream, diffusing=diffusing,
-                    effort=("low" if attempt else None))
+                    effort=("low" if attempt else None), temperature=temp)
                 self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
                                               model=self.model, is_sub_call=True)
-                return text
+                return _strip_tail_echo(text, tail)
             except Exception as exc:
                 last_exc = exc
         return f"[render failed: {last_exc}] {plan.material[:200]}"
 
     def _complete(self, system: str, user: str, on_stream=None,
-                  diffusing: bool = False, effort: str | None = None) -> tuple[str, int, int]:
+                  diffusing: bool = False, effort: str | None = None,
+                  temperature: float | None = None) -> tuple[str, int, int]:
         """One generation call → (text, input_tokens, output_tokens). The only
         provider-specific code; everything that builds `system`/`user` is shared.
         With on_stream set, streams and calls on_stream(full_text_so_far)."""
+        temp = MERCURY_TEMPERATURE if temperature is None else temperature
         if self.provider in _OPENAI_PROVIDERS:
             extra = {"reasoning_effort": effort or MERCURY_REASONING_EFFORT}
             if on_stream is not None:
@@ -1593,7 +2469,7 @@ class Renderer:
                 in_tok = out_tok = 0
                 stream = self.client.chat.completions.create(
                     model=self.model, max_tokens=MERCURY_MAX_TOKENS,
-                    temperature=MERCURY_TEMPERATURE, extra_body=extra,
+                    temperature=temp, extra_body=extra,
                     messages=[{"role": "system", "content": system},
                               {"role": "user", "content": user}], stream=True)
                 for chunk in stream:
@@ -1617,7 +2493,7 @@ class Renderer:
                 return text, in_tok, out_tok
             resp = self.client.chat.completions.create(
                 model=self.model, max_tokens=MERCURY_MAX_TOKENS,
-                temperature=MERCURY_TEMPERATURE, extra_body=extra,
+                temperature=temp, extra_body=extra,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}])
             text = (resp.choices[0].message.content or "").strip()
@@ -1847,7 +2723,9 @@ class Renderer:
 
     def _dry(self, plan: PagePlan) -> str:
         lead = {"open": "", "dwell": "There is more here. ",
-                "move": f"Which carries us toward {plan.title.lower()}. "}[plan.mode]
+                "move": f"Which carries us toward {plan.title.lower()}. ",
+                "bridge": f"Where these meet — {plan.title.lower()}. ",
+                "ghost": f"An unwritten door — {plan.title.lower()}. "}[plan.mode]
         body = "\n\n".join(plan.chunks) if plan.chunks else plan.material
         return (lead + body).strip()[:2200]
 

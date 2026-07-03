@@ -77,15 +77,41 @@ def page_path(paths: VaultPaths, page_id: str, page_type: PageType) -> Path:
     return _type_dir(paths, page_type) / f"{page_id}.md"
 
 
+_FLAT_SKIP = {"index", "log", "readme", "claude", "agents", "contributing", "license"}
+
+
+def _flat_md_files(paths: VaultPaths) -> list[Path]:
+    """OKF-style flat bundle: Markdown concept files at the vault root (and one
+    level of subdirs), no wiki/ tree. Housekeeping files and Dwell dirs skipped."""
+    out: list[Path] = []
+    root = paths.root
+    try:
+        subs = [root] + [p for p in root.iterdir()
+                         if p.is_dir() and not p.name.startswith((".", "_"))
+                         and p.name not in ("raw", "assets", "wiki")]
+        for d in subs:
+            for f in d.glob("*.md"):
+                if f.stem.lower() not in _FLAT_SKIP:
+                    out.append(f)
+    except OSError:
+        pass
+    return out
+
+
 def locate_page(paths: VaultPaths, page_id: str) -> Path | None:
     """Find the on-disk path for a page when its type isn't known.
 
-    Searches every wiki/<type>/ directory. Returns None if no match.
+    Searches every wiki/<type>/ directory; if the vault has no wiki/ tree at all
+    (an OKF bundle), falls back to the flat scan. Returns None if no match.
     """
     for pt in PageType:
         candidate = page_path(paths, page_id, pt)
         if candidate.is_file():
             return candidate
+    if not paths.wiki.is_dir():
+        for f in _flat_md_files(paths):
+            if f.stem.lower() == page_id.lower():
+                return f
     return None
 
 
@@ -108,6 +134,9 @@ def list_pages(
         for p in sorted(d.iterdir()):
             if p.is_file() and p.suffix == ".md":
                 ids.append(p.stem)
+    # OKF bundle (no wiki/ tree): the flat Markdown files ARE the pages
+    if not ids and not paths.wiki.is_dir() and page_type is None:
+        ids = sorted({f.stem for f in _flat_md_files(paths)})
     return ids
 
 
@@ -165,25 +194,25 @@ def parse_page_markdown(text: str, *, fallback_id: str = "") -> Page:
     if not page_id:
         raise ValueError("frontmatter is missing 'id'")
 
+    # OKF interop (DWELL_OKF.md): OKF requires only `type`, and it's a FREE string
+    # ("BigQuery Table", "metric", …). Unknown or missing types load as navigable
+    # CONCEPT pages instead of failing the vault; 'source' keeps its exact meaning.
     type_value = fm.get("type")
-    if type_value is None:
-        raise ValueError(f"page {page_id!r} is missing 'type' in frontmatter")
     try:
         page_type = PageType(type_value)
-    except ValueError as exc:
-        raise ValueError(
-            f"page {page_id!r} has unknown type {type_value!r}"
-        ) from exc
+    except (ValueError, TypeError):
+        page_type = PageType.CONCEPT
 
     return Page(
         id=page_id,
         title=str(fm.get("title") or page_id),
         type=page_type,
-        summary=str(fm.get("summary") or ""),
+        # OKF aliases: description → summary, timestamp → updated
+        summary=str(fm.get("summary") or fm.get("description") or ""),
         tags=_as_str_list(fm.get("tags")),
         aliases=_as_str_list(fm.get("aliases")),
         sources=_as_str_list(fm.get("sources")),
-        updated=str(fm.get("updated") or ""),
+        updated=str(fm.get("updated") or fm.get("timestamp") or ""),
         # Evidence metadata: optional; empty string/list means unspecified
         # (the rule-based contradiction resolver in Mender will fall back
         # to its LLM branch when these aren't set).

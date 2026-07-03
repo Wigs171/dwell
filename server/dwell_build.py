@@ -80,26 +80,46 @@ class BuildState:
 BUILDS: dict[str, BuildState] = {}
 
 
-def _build_sources(d: Path) -> list[dict]:
+def _build_sources(d: Path, exclude: list[str] | None = None,
+                   include: list[str] | None = None) -> list[dict]:
     """The draft's sources as a build worklist. Duplicates (already-ingested) start
-    'skipped'; everything else 'queued'."""
+    'skipped'; everything else 'queued'. `exclude` = source ids the reader UNCHECKED
+    in the pending-sources list — they stay in the draft (still pending for a later
+    build) but sit this one out as 'skipped'. `include` = vault-pending raw files
+    ("vault:<kind>/<filename>") the reader explicitly OPTED IN — files already in
+    raw/ but absent from the ingest registry (e.g. backfilled marathon vaults);
+    opt-in only, so a vault with hundreds pending never builds them by accident."""
+    ex = set(exclude or [])
     src = _sources(d)
     out: list[dict] = []
+    for vid in include or []:
+        if not vid.startswith("vault:") or "/" not in vid:
+            continue
+        kind, _, fname = vid[len("vault:"):].partition("/")
+        base = (d / "wiki" / "_meta" / "proposals" if kind == "proposal"
+                else d / "raw" / Path(kind).name)
+        p = (base / Path(fname).name).resolve()
+        if p.parent == base.resolve() and p.is_file():
+            out.append({"id": vid, "name": fname, "kind": "file",
+                        "path": str(p), "status": "queued"})
     for f in src["files"]:
         name = f["name"] + ("." + f["ext"] if f["ext"] else "")
+        skip = f.get("status") == "duplicate" or f["id"] in ex
         out.append({"id": f["id"], "name": name, "kind": "file",
                     "path": str(_upload_dir(d) / name),
-                    "status": "skipped" if f.get("status") == "duplicate" else "queued"})
+                    "status": "skipped" if skip else "queued"})
     for l in src["links"]:
         out.append({"id": l["id"], "name": l["name"], "kind": "link",
-                    "path": l["name"], "status": "queued"})
+                    "path": l["name"],
+                    "status": "skipped" if l["id"] in ex else "queued"})
     # A research prompt is buildable work too: web-research it + the graph's open nodes,
     # then ingest. Always queued (never a duplicate — it's re-runnable).
     prompt = (src.get("prompt") or "").strip()
     if prompt:
         label = prompt if len(prompt) <= 60 else prompt[:57] + "…"
         out.append({"id": "research", "name": label, "kind": "research",
-                    "path": prompt, "status": "queued"})
+                    "path": prompt,
+                    "status": "skipped" if "research" in ex else "queued"})
     return out
 
 
@@ -218,28 +238,6 @@ def _expand_sources(d: Path, sources: list[dict], emit) -> list[dict]:
 # NOT one orchestrator doing everything.
 def _phase_activity(p: dict) -> str | None:
     ph = p.get("phase")
-    # Gather phases (research prompt → cheap non-REPL web gather).
-    if ph == "resolved":
-        subj = (p.get("subject") or "").strip()
-        qs = p.get("queries") or []
-        head = f"Read the vault → researching {subj}" if subj else "Read the vault → planning research"
-        if qs:
-            head += " · " + ", ".join(q for q in qs[:3] if q)
-        return head
-    if ph == "search":
-        return p.get("msg") or "Searching the web…"
-    if ph == "searched":
-        n = p.get("count", 0)
-        return f"Found {n} source{'' if n == 1 else 's'} · reading…"
-    if ph == "fetch":
-        return "Reading a source…"
-    if ph == "skipped":
-        return None
-    if ph == "gathered":
-        return None
-    if ph == "gather_done":
-        n = p.get("saved", 0)
-        return f"Gathered {n} source{'' if n == 1 else 's'}"
     if ph == "route":
         return "Planner reading the source & mapping pages…"
     if ph == "planned":
@@ -315,24 +313,20 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
     if o.max_pages:
         env["COMPENDIUM_MAX_PAGES_PER_INGEST"] = str(int(o.max_pages))
-    # Point the pipeline at an LLM. Prefer the explicitly chosen endpoint; otherwise,
-    # when there's no ANTHROPIC_API_KEY in the environment (e.g. a fresh clone with no
-    # .env), fall back to the first configured + enabled endpoint so builds work out of
-    # the box. Non-Anthropic → the compat shim; Anthropic → the SDK at that base.
-    from dwell_endpoints import resolve_endpoint, first_enabled_endpoint
-    from compendium.llm.providers import detect_provider
-    ep = resolve_endpoint(o.endpoint_id) if o.endpoint_id else None
-    if ep is None and not env.get("ANTHROPIC_API_KEY"):
-        ep = first_enabled_endpoint()
-    if ep:
-        env["COMPENDIUM_LLM_BASE_URL"] = ep["base_url"]
-        env["COMPENDIUM_LLM_API_KEY"] = ep.get("api_key", "")
-        env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
+    # Multi-provider: point the pipeline at the chosen endpoint. Non-Anthropic →
+    # the compat shim; Anthropic → the SDK at that base. No endpoint = default .env.
+    if o.endpoint_id:
+        from dwell_endpoints import resolve_endpoint
+        from compendium.llm.providers import detect_provider
+        ep = resolve_endpoint(o.endpoint_id)
+        if ep:
+            env["COMPENDIUM_LLM_BASE_URL"] = ep["base_url"]
+            env["COMPENDIUM_LLM_API_KEY"] = ep.get("api_key", "")
+            env["COMPENDIUM_LLM_PROVIDER"] = detect_provider(ep["base_url"])
 
     if is_research:
-        # A research prompt → cheap non-REPL gather (web search → fetch → save)
-        # then structured ingest of each source, in one process. Emits @@PROG@@
-        # (gather + ingest phases). Needs a search provider (UI store, else .env).
+        # A research prompt → web-research it + the graph's open nodes, then ingest, via a
+        # single loop pass. Needs a search provider (UI store, else .env).
         from dwell_endpoints import read_search_config, search_available
         sc = read_search_config()
         if sc["provider"] == "jina" and sc["api_key"]:
@@ -345,13 +339,11 @@ def _ingest_one(state: BuildState, emit, s: dict, vault: str, dry: bool) -> bool
             emit("log", {"id": s["id"], "line": "[error] No web search provider configured — "
                          "add one in Learn settings → Web search to use a research prompt."})
             return False
-        cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
-               "--from-prompt", "--allow-skip", "--json-progress"]
-        if not o.auto_explore:
-            cmd += ["--no-explore"]
+        cmd = [sys.executable, str(CLI), "loop", s["path"], "--vault", vault,
+               "--max-iterations", "1", "--auto", "3", "--no-lint"]
     else:
         cmd = [sys.executable, str(CLI), "ingest", s["path"], "--vault", vault,
-               "--structured", "--allow-skip", "--json-progress"]
+               "--allow-skip", "--json-progress"]
         if not o.auto_explore:
             cmd += ["--no-explore"]
     if cap is not None:
@@ -431,6 +423,20 @@ def _run_build(state: BuildState, emit, dry: bool, resume: bool = False) -> None
             s["status"] = "failed"
             emit("log", {"id": s["id"], "line": f"[error] {exc}"})
         emit("source", {"id": s["id"], "status": s["status"]})
+        # An ACCEPTED ghost-door proposal is now real vault material — retire the
+        # draft to proposals/accepted/ so it stops listing as pending (rejection
+        # stays manual: delete the file). Not on dry runs — nothing was ingested.
+        if (s["status"] == "done" and not dry
+                and s["id"].startswith("vault:proposal/")):
+            try:
+                p = Path(s["path"])
+                acc = p.parent / "accepted"
+                acc.mkdir(parents=True, exist_ok=True)
+                os.replace(p, acc / p.name)
+                emit("log", {"id": s["id"],
+                             "line": f"proposal accepted → proposals/accepted/{p.name}"})
+            except Exception:
+                pass
         if cap is not None and state.cost >= cap and any(x["status"] == "queued" for x in state.sources):
             capped = True
             break
@@ -479,6 +485,8 @@ async def _sse_from_thread(loop: asyncio.AbstractEventLoop, produce):
 class BuildReq(BaseModel):
     vault: str
     dry: bool = False
+    exclude: list[str] = []           # source ids unchecked in the pending list
+    include: list[str] = []           # vault-pending raw files OPTED IN ("vault:<kind>/<file>")
     max_cost: float | None = DEFAULT_MAX_COST     # per-source cap
     total_cap: float | None = None                # whole-build cap; None = unlimited
     model_orchestrator: str | None = None
@@ -525,7 +533,9 @@ async def learn_build(req: BuildReq):
         if not any(s["status"] == "queued" for s in state.sources):
             raise HTTPException(status_code=400, detail="nothing left to build — every source finished")
     else:
-        state = BuildState(vault=key, sources=_build_sources(d), opts=_opts_from(req))
+        state = BuildState(vault=key, sources=_build_sources(d, exclude=req.exclude,
+                                                             include=req.include),
+                           opts=_opts_from(req))
         if not any(s["status"] == "queued" for s in state.sources):
             raise HTTPException(status_code=400, detail="nothing new to build (all sources already ingested)")
     BUILDS[key] = state

@@ -28,6 +28,7 @@ export interface SSEHandlers<Start, Done> {
   start?: (p: Start) => void;
   frame?: (p: PageFrame) => void;
   done?: (p: Done) => void;
+  path_done?: (p: import('./types').PathProgress) => void;   // curated Path reached end-of-spine
   error?: (p: { message: string }) => void;
 }
 
@@ -112,6 +113,11 @@ export const api = {
 
   vaultSources: (path: string) =>
     jget<{ sources: import('./types').VaultSource[] }>(`/vault-sources?vault=${encodeURIComponent(path)}`),
+  sourcePeek: (vault: string, kind: string, name: string) =>
+    jget<import('./types').SourcePeek>(
+      `/learn/peek?vault=${encodeURIComponent(vault)}&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`),
+  vaultExportOkf: (path: string) =>
+    jpost<{ ok: boolean; dest: string; concepts: number; links: number }>('/vault/export-okf', { vault: path }),
   vaultImport: (path: string) =>
     jpost<{ ok: boolean; vault: VaultInfo }>('/vault/import', { path }),
   vaultDelete: async (path: string, purge: boolean) => {
@@ -215,6 +221,8 @@ export const api = {
     jpost<{ ok: boolean; form: string }>('/form', { session: sid, name }),
   setLanguage: (sid: string, name: string) =>
     jpost<{ ok: boolean; language: string }>('/language', { session: sid, name }),
+  setDream: (sid: string, value: number) =>
+    jpost<{ ok: boolean; dream: number }>('/dream', { session: sid, value }),
   missed: (sid: string, n = 25) =>
     jget<{ embed_label: string; pairs: MissedPair[] }>(`/missed?session=${sid}&n=${n}`),
   timeline: (sid: string, minConf = 0.7) =>
@@ -224,10 +232,15 @@ export const api = {
   nodes: (sid: string, top = 14) =>
     jget<{ nodes: { id: string; title: string; centrality: number; seen: number }[] }>(
       `/nodes?session=${sid}&top=${top}`),
+  paths: (sid: string) =>
+    jget<{ paths: import('./types').PathInfo[] }>(`/paths?session=${sid}`),
+  generatePath: (sid: string, length = 5, temperature = 0.6) =>
+    jpost<import('./types').PathInfo & { spine: string[]; titles: string[]; cost: number }>(
+      '/paths/generate', { session: sid, length, temperature }),
   state: (sid: string) => jget<{ cost: number; recap: string; branches: Branch[] }>(`/state?session=${sid}`),
 
   streamPage: (
-    body: { session: string; action: string; plan_id?: string | null; start?: string; seed?: string | null; wander?: number; diffusing?: boolean },
+    body: { session: string; action: string; plan_id?: string | null; start?: string; seed?: string | null; path_id?: string | null; wander?: number; diffusing?: boolean },
     h: SSEHandlers<PageStart, PageDone>, signal?: AbortSignal,
   ) => streamPost('/page', body, h, signal),
 

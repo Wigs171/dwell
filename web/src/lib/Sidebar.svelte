@@ -44,6 +44,16 @@
       <div class="field">
         <input type="text" placeholder="Search nodes…" bind:value={dwell.query} />
       </div>
+      {#if dwell.pathProgress}
+        <div class="path-chip" class:done={dwell.pathProgress.complete}
+             title={dwell.pathProgress.goal ?? ''}>
+          <span class="pc-ico">◇</span>
+          <span class="pc-body">
+            <span class="pc-title">{dwell.pathProgress.title}</span>
+            <span class="pc-step">step {dwell.pathProgress.gate}/{dwell.pathProgress.gates}{dwell.pathProgress.complete ? ' · done ✓' : ''}</span>
+          </span>
+        </div>
+      {/if}
     {/if}
 
     {#if dwell.query.trim()}
@@ -59,6 +69,26 @@
         {#if !dwell.filteredNodes.length}<div class="muted">no matches</div>{/if}
       </div>
     {:else}
+      {#if dwell.session}
+        <button class="gen-path" disabled={dwell.busy} onclick={() => dwell.generatePath()}
+                title="wander the vault and compose a fresh guided path (different every time)">
+          ✨ Generate a path
+        </button>
+      {/if}
+
+      {#if dwell.paths.length}
+        <div class="section">
+          <div class="sec-head static">Guided paths</div>
+          {#each dwell.paths as p (p.id)}
+            <button class="list-item path" onclick={() => dwell.startPath(p.id)}
+                    disabled={dwell.busy} title={p.goal || `walk this path (${p.gates} steps)`}>
+              <span class="dot path-dot">◇</span>
+              <span class="t">{p.title}</span><span class="c">{p.gates}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       {#if trail.length}
         <div class="section">
           <div class="sec-head static">Reading trail</div>
@@ -173,6 +203,32 @@
   .list-item .dot.seen { color: var(--accent); }
   .list-item .t { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .list-item .c { color: var(--meta); font-family: Consolas, monospace; font-size: 10px; flex: 0 0 auto; }
+
+  .gen-path {
+    width: 100%; text-align: left; margin: 4px 0 2px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+  .gen-path:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  .gen-path:disabled { opacity: .5; cursor: default; }
+  .path-dot { color: var(--accent); }
+  .list-item.path .t { font-weight: 600; }
+  .path-chip {
+    display: flex; align-items: center; gap: 8px; margin: 2px 0 4px;
+    padding: 7px 9px; border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .path-chip.done {
+    background: color-mix(in srgb, #3fb950 14%, transparent);
+    border-color: color-mix(in srgb, #3fb950 40%, transparent);
+  }
+  .pc-ico { color: var(--accent); font-size: 13px; flex: 0 0 auto; }
+  .path-chip.done .pc-ico { color: #3fb950; }
+  .pc-body { display: flex; flex-direction: column; min-width: 0; }
+  .pc-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pc-step { font-size: 10.5px; color: var(--meta); font-variant-numeric: tabular-nums; }
 
   .user-bar {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px;

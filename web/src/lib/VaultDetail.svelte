@@ -5,15 +5,48 @@
   import { dwell } from './dwell.svelte';
   import { api } from './api';
 
-  let tab = $state<'about' | 'sources'>('about');
+  let tab = $state<'about' | 'sources' | 'pending'>('about');
   let confirming = $state(false);
   const v = $derived(dwell.vaultDetail);
   const resumable = $derived(!!v && !!dwell.vaultStash[v.path]);
-  const srcCount = $derived(dwell.vaultDetailSources.length);
+  // learned (+ pre-registry legacy) vs still-to-learn — the vault's saved learn queue
+  const learnedSrc = $derived(dwell.vaultDetailSources.filter((s) => s.status !== 'pending'));
+  const pendingSrc = $derived(dwell.vaultDetailSources.filter((s) => s.status === 'pending'));
+  const srcCount = $derived(learnedSrc.length);
+  const pendCount = $derived(pendingSrc.length);
+
+  // Peek — read a source's text right here to refresh yourself on what it is.
+  let peekKey = $state<string | null>(null);
+  let peekText = $state('');
+  let peekLoading = $state(false);
+  async function togglePeek(s: { kind: string; name: string }) {
+    const key = s.kind + '/' + s.name;
+    if (peekKey === key) { peekKey = null; return; }
+    peekKey = key; peekLoading = true; peekText = '';
+    try {
+      const p = await api.sourcePeek(v!.path, s.kind, s.name);
+      peekText = p.text || p.note || '(empty)';
+      if (p.truncated) peekText += '\n\n… (truncated)';
+    } catch { peekText = '(could not read this source)'; }
+    peekLoading = false;
+  }
   // imported (external) vaults are FORGOTTEN (files kept); managed ones are DELETED.
   const purge = $derived(!v?.imported);
   const removeLabel = $derived(v?.imported ? 'Remove from library' : 'Delete');
   $effect(() => { void v?.path; confirming = false; });   // reset confirm when the modal changes
+
+  let exporting = $state(false);
+  let exportNote = $state('');
+  async function exportOkf() {
+    if (!v || exporting) return;
+    exporting = true; exportNote = '';
+    try {
+      const r = await api.vaultExportOkf(v.path);
+      exportNote = `exported ${r.concepts} concepts`;
+      await dwell.refreshVaults();
+    } catch { exportNote = 'export failed'; }
+    exporting = false;
+  }
 
   let coverInput = $state<HTMLInputElement>();
   function pickCover(e: Event) {
@@ -49,22 +82,41 @@
       <div class="tabs">
         <button class="tab" class:active={tab === 'about'} onclick={() => (tab = 'about')}>About</button>
         <button class="tab" class:active={tab === 'sources'} onclick={() => (tab = 'sources')}>Sources{srcCount ? ` (${srcCount})` : ''}</button>
+        <button class="tab" class:active={tab === 'pending'} onclick={() => (tab = 'pending')}>Pending{pendCount ? ` (${pendCount})` : ''}</button>
       </div>
 
       <div class="body">
         {#if tab === 'about'}
           {#if v.topic}<p class="desc">{v.topic}</p>{:else}<p class="desc dim">No description.</p>{/if}
         {:else}
+          {@const rows = tab === 'sources' ? learnedSrc : pendingSrc}
           {#if dwell.vaultDetailSourcesLoading}
             <p class="dim">Loading sources…</p>
-          {:else if !dwell.vaultDetailSources.length}
-            <p class="dim">No source documents listed for this knowledge base.</p>
+          {:else if !rows.length}
+            <p class="dim">{tab === 'sources'
+              ? 'No source documents listed for this knowledge base.'
+              : 'Nothing waiting to be learned — add material via Expand.'}</p>
           {:else}
             <ul class="srclist">
-              {#each dwell.vaultDetailSources as s (s.kind + '/' + s.name)}
-                <li><span class="sname">{s.name}</span><span class="skind">{s.kind}{s.exts.length ? ` · ${s.exts.join(', ')}` : ''}</span></li>
+              {#each rows as s (s.kind + '/' + s.name)}
+                <li>
+                  {#if s.kind === 'link'}
+                    <a class="sname slink" href={s.name} target="_blank" rel="noreferrer" title="open the link">{s.name}</a>
+                  {:else if s.kind === 'research'}
+                    <span class="sname">{s.name}</span>
+                  {:else}
+                    <button class="sname speek" title="view this source" onclick={() => togglePeek(s)}>{s.name}</button>
+                  {/if}
+                  <span class="skind">{s.kind}{s.exts.length ? ` · ${s.exts.join(', ')}` : ''}</span>
+                </li>
+                {#if peekKey === s.kind + '/' + s.name}
+                  <li class="peekrow">{#if peekLoading}<span class="dim">loading…</span>{:else}<pre class="peek">{peekText}</pre>{/if}</li>
+                {/if}
               {/each}
             </ul>
+            {#if tab === 'pending'}
+              <p class="pendnote">These build when you Expand this knowledge base — choose which in the Learn queue.</p>
+            {/if}
           {/if}
         {/if}
       </div>
@@ -80,6 +132,7 @@
           {/if}
         </span>
         <span class="spacer"></span>
+        <button class="ghost" disabled={exporting} onclick={exportOkf} title="export as an Open Knowledge Format bundle (a sibling '-okf' folder)">{exporting ? 'Exporting…' : exportNote || 'OKF'}</button>
         <button class="ghost" disabled={dwell.learnBusy} onclick={() => v && dwell.expandVault(v)} title="add more material to this knowledge base">Expand</button>
         <button class="open" disabled={dwell.loading} onclick={() => dwell.enterVaultDetail()}>
           {resumable ? '▸ Resume' : 'Open knowledge base'}
@@ -144,6 +197,16 @@
   .srclist li:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .sname { font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .skind { font-size: 11px; color: var(--meta); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  button.speek, a.slink { background: none; border: none; padding: 0; text-align: left; text-decoration: none; cursor: pointer; font-family: inherit; }
+  button.speek:hover, a.slink:hover { color: var(--accent); text-decoration: underline; }
+  .peekrow { display: block !important; padding: 0 9px 8px; }
+  .peekrow:hover { background: none !important; }
+  .peek {
+    margin: 2px 0 0; max-height: 220px; overflow-y: auto; white-space: pre-wrap;
+    font-size: 11.5px; line-height: 1.55; color: var(--fg); font-family: inherit;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  }
+  .pendnote { font-size: 11.5px; color: var(--meta); margin: 10px 2px 0; }
 
   .footer { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
   .footer .spacer { flex: 1 1 auto; }

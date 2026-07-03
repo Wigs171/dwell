@@ -1,9 +1,9 @@
 """Learn — build a knowledge base from the web UI (APIRouter mounted by dwell_server).
 
-INTAKE (gather → curate): create a draft vault, stash uploaded files into
-`raw/uploads/`, record web/video links in a `_meta/learn.json` manifest, and
-list/remove sources so the user can curate before committing. The ingest swarm
-(the "commit" step) lives in dwell_build.py.
+Phase 2 = INTAKE (gather → curate). Create a draft vault, stash uploaded files into
+`raw/uploads/`, record web/video links + a research prompt in a `_meta/learn.json`
+manifest, and list/remove sources so the user can curate before committing. The ingest
+swarm (the "commit" step) is Phase 3.
 
 Self-contained on purpose (no import of dwell_server) so there's no import cycle — it
 re-reads VAULT_ROOT from the same env var and talks to the `compendium` package directly.
@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/learn", tags=["learn"])
 
-VAULT_ROOT = Path(os.environ.get("DWELL_VAULT_ROOT") or str(Path(__file__).resolve().parent.parent / "vaults"))
+VAULT_ROOT = Path(os.environ.get("DWELL_VAULT_ROOT") or str(Path.home() / "Dwell"))
 MANIFEST = "learn.json"               # under <vault>/_meta/
 UPLOAD_KIND = "uploads"               # raw/<UPLOAD_KIND>/
 _ALLOWED_EXT = {".pdf", ".md", ".markdown", ".txt"}
@@ -293,3 +293,61 @@ def learn_remove(vault: str, id: str) -> dict:
         m["links"] = [l for l in m.get("links", []) if l != url]
         _write_manifest(d, m)
     return {"sources": _sources(d)}
+
+
+@router.get("/peek")
+def learn_peek(vault: str, kind: str, name: str) -> dict:
+    """A quick look inside one raw source — so the reader can refresh themselves on
+    what a (pending or learned) document actually is before building. Returns the
+    text head of the best-readable variant: .md/.txt directly, a PDF via its cached
+    *.extracted.txt (else PyMuPDF, first pages). Links have no body — the UI shows
+    the URL itself."""
+    d = _safe_vault(vault)
+    kind = Path(kind).name                       # no traversal
+    stem = Path(name).name
+    if kind == "proposal":                       # ghost-door proposals live in _meta
+        sub = (d / "wiki" / "_meta" / "proposals").resolve()
+    else:
+        sub = (d / "raw" / kind).resolve()
+    if not sub.is_dir() or d.resolve() not in sub.parents:
+        raise HTTPException(status_code=404, detail="unknown source kind")
+    cand = [f for f in sub.iterdir() if f.is_file() and f.stem == stem]
+    if not cand:
+        raise HTTPException(status_code=404, detail="source not found")
+    CAP = 8000
+    text, via = "", ""
+    by_ext = {f.suffix.lower(): f for f in cand}
+    for ext in (".md", ".markdown", ".txt"):
+        if ext in by_ext:
+            try:
+                text, via = by_ext[ext].read_text(encoding="utf-8", errors="replace"), ext
+                break
+            except Exception:
+                pass
+    if not text:
+        extracted = sub / f"{stem}.pdf.extracted.txt"
+        if not extracted.is_file():
+            extracted = sub / f"{stem}.extracted.txt"
+        if extracted.is_file():
+            try:
+                text, via = extracted.read_text(encoding="utf-8", errors="replace"), "extracted"
+            except Exception:
+                pass
+    if not text and ".pdf" in by_ext:
+        try:
+            import fitz
+            with fitz.open(str(by_ext[".pdf"])) as doc:
+                parts = []
+                for page in doc:
+                    parts.append(page.get_text())
+                    if sum(len(p) for p in parts) > CAP:
+                        break
+                text, via = "\n".join(parts), "pdf"
+        except Exception:
+            text = ""
+    if not text:
+        return {"name": stem, "kind": kind, "text": "",
+                "note": "no readable text for this format", "truncated": False}
+    truncated = len(text) > CAP
+    return {"name": stem, "kind": kind, "text": text[:CAP],
+            "note": "", "truncated": truncated}

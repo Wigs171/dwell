@@ -70,12 +70,13 @@ from starlette.concurrency import run_in_threadpool
 # server can be launched from anywhere (uvicorn --app-dir, the .bat, or directly).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dwell import (  # noqa: E402
-    Brain, Navigator, Renderer, ReadingHistory, TweenCache, PagePlan,
+    Brain, Navigator, PathNavigator, Renderer, ReadingHistory, TweenCache, PagePlan,
     VaultPaths, missed_connections, VOICES, DEFAULT_VOICE, LEVELS, DEFAULT_LEVEL,
     LANGUAGES, DEFAULT_LANGUAGE,
     FORMS, DEFAULT_FORM,
     TWEEN_CACHE_FILE, HISTORY_FILE, TAIL_CHARS, _read_env_key,
 )
+from dwell_paths import list_paths, load_path, resolve_spine, generate_spine  # noqa: E402 — curated Paths
 from dwell_tts import (  # noqa: E402 — audio narration (Kokoro, server-side)
     web_tts_available, synth_wavs, list_web_voices,
     DEFAULT_NARRATOR_VOICE, NARRATOR_VOICES,
@@ -86,14 +87,13 @@ from compendium.vault.pages import locate_page  # noqa: E402 — find a node's f
 
 HERE = Path(__file__).resolve().parent
 WEB_CLIENT = HERE / "dwell_web.html"
-DIST = HERE.parent / "web" / "dist"          # built Svelte app (single-server mode)
+DIST = HERE / "dwell-web" / "dist"          # built Svelte app (single-server mode)
 
 DEFAULT_WANDER = 0.4
 SESSION_TTL = float(os.environ.get("DWELL_SESSION_TTL", str(6 * 3600)))  # idle evict
-# Knowledge bases live in one folder. For a cloned repo this defaults to the bundled
-# ./vaults (so the Biology 101 demo works out of the box). Override DWELL_VAULT_ROOT to
-# point at your own vault library (e.g. ~/Dwell).
-VAULT_ROOT = Path(os.environ.get("DWELL_VAULT_ROOT") or str(HERE.parent / "vaults"))
+# All knowledge bases live in ONE dedicated folder (default ~/Dwell) — not scattered in
+# Downloads — so the app is predictable for any user. Override with DWELL_VAULT_ROOT.
+VAULT_ROOT = Path(os.environ.get("DWELL_VAULT_ROOT") or str(Path.home() / "Dwell"))
 VAULT_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -116,6 +116,8 @@ class DwellSession:
     proposed: dict[str, PagePlan] = field(default_factory=dict)  # plan_id -> branch plan
     page_renders: list = field(default_factory=list)             # per page: {plan,tail,recap,hint} for re-level
     node_page_order: dict[str, list[str]] = field(default_factory=dict)  # node_id -> plan.key()s in first-seen order (image cycling cursor)
+    path: dict | None = None                        # active curated Path meta (id/title/goal/gates), else free-wander
+    generated_path: dict | None = None              # last generator output (walked via path_id="__generated__")
     text_fig_density: str = DEFAULT_DENSITY                       # off|sparse|normal|rich — how often a no-image page carries a derived text-figure
     source_titles: dict[str, str] = field(default_factory=dict)  # source id -> readable title (cached)
     wander: float = DEFAULT_WANDER
@@ -525,6 +527,42 @@ def _voices_payload(s: DwellSession) -> dict:
     }
 
 
+def _stage_ghost_proposal(s: "DwellSession", plan, text: str) -> None:
+    """WRITE-BACK (phase 1): a rendered ghost-door page is staged as a PROPOSAL —
+    draft material the vault could grow by. It never touches canon: it lands in
+    wiki/_meta/proposals/ and only enters the wiki through a Learn build the reader
+    opts it into (ingest stays the single gate — the CREED holds). One proposal per
+    ghost; re-renders don't re-stage. Reject = delete the file (it stays a ghost)."""
+    try:
+        vault_dir = Path(s.vault_path)
+        slug = re.sub(r"[^a-z0-9-]+", "-", plan.ghost.lower()).strip("-") or "ghost"
+        pdir = vault_dir / "wiki" / "_meta" / "proposals"
+        f = pdir / f"{slug}.md"
+        if f.exists() or not text or text.startswith("[render failed"):
+            return
+        pdir.mkdir(parents=True, exist_ok=True)
+        mentions = ", ".join(sorted(s.brain.ghosts.get(plan.ghost, ())))
+        how = ("dreamed" if s.renderer.dream > 0 else "mapped")
+        f.write_text(
+            f"---\n"
+            f"id: {slug}\n"
+            f"title: {plan.title}\n"
+            f"type: proposal\n"
+            f"status: proposed\n"
+            f"kind: ghost-door\n"
+            f"created: {time.strftime('%Y-%m-%d')}\n"
+            f"origin: {how} at creativity {int(round(s.renderer.dream * 100))}%\n"
+            f"mentioned_by: [{mentions}]\n"
+            f"---\n\n"
+            f"# {plan.title}\n\n"
+            f"> PROPOSAL — drafted from a reader's ghost-door page. Accept it by "
+            f"checking it into a Learn build (it becomes source material for ingest); "
+            f"reject it by deleting this file — the door stays a ghost.\n\n"
+            f"{text}\n", encoding="utf-8")
+    except Exception:
+        pass                                    # staging must never break the read
+
+
 def _branches(s: DwellSession) -> list[dict]:
     """Recompute the reader-facing directions and (re)stash their plans by id.
     `Navigator.propose` is non-mutating and consumes no RNG, so it is safe to call
@@ -621,7 +659,7 @@ def health() -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    # Single-server mode: serve the built Svelte app (web/dist) when present,
+    # Single-server mode: serve the built Svelte app (dwell-web/dist) when present,
     # falling back to the legacy test client, then a bare status page.
     dist_index = DIST / "index.html"
     if dist_index.exists():
@@ -630,7 +668,7 @@ def index() -> HTMLResponse:
         return HTMLResponse(WEB_CLIENT.read_text(encoding="utf-8"))
     return HTMLResponse(
         "<h1>Dwell server</h1><p>API is up, but no frontend was found. Build it with "
-        "<code>npm run build</code> in <code>web/</code>.</p>")
+        "<code>npm run build</code> in <code>dwell-web/</code>.</p>")
 
 
 @app.get("/asset")
@@ -696,12 +734,47 @@ def _is_source_artifact(name: str) -> bool:
 
 def _vault_source_list(d: Path) -> list[dict]:
     """Logical source documents (raw/<kind>/* except assets), for the detail view — each
-    as {name (stem), kind (the raw subdir), exts (formats kept)}. Format variants of ONE
-    document (e.g. a paper kept as both .pdf and .md) collapse to a single entry, and
-    internal artifacts (.claude-baseline, *.extracted.txt, dotfiles) are skipped. Keying
-    by (kind, stem) also guarantees the list has no duplicate identity for the UI."""
+    as {name (stem), kind (the raw subdir), exts (formats kept), status}. Format variants
+    of ONE document (e.g. a paper kept as both .pdf and .md) collapse to a single entry,
+    and internal artifacts (.claude-baseline, *.extracted.txt, dotfiles) are skipped.
+
+    `status` splits the learned from the still-to-learn (the ingest registry at
+    raw/.ingest-registry.json is the source of truth — SHA-256 + raw_path per ingest):
+      • learned   — recorded in the registry (or an upload whose hash is already there)
+      • pending   — awaiting a build: a NEW upload, a manifest link, a research prompt
+      • untracked — pre-registry legacy files; shown with the learned (can't verify)
+    Manifest links + the research prompt (from _meta/learn.json) are appended as
+    pending entries so the queue is visible on the vault card, not just in Learn."""
     by_key: dict[tuple[str, str], dict] = {}
     raw = d / "raw"
+    # registry lookups (names + hashes + urls), cheap single JSON read
+    reg_names: set[str] = set()
+    reg_hashes: set[str] = set()
+    reg_urls: set[str] = set()
+    has_registry = False
+    try:
+        rj = json.loads((raw / ".ingest-registry.json").read_text(encoding="utf-8"))
+        has_registry = bool(rj.get("entries"))
+        for e in rj.get("entries", []):
+            base = (e.get("raw_path") or "").replace("\\", "/").rsplit("/", 1)[-1]
+            if base:
+                reg_names.add(base.lower())
+                reg_names.add(base.rsplit(".", 1)[0].lower())
+            if e.get("hash"):
+                reg_hashes.add(e["hash"])
+            if e.get("url"):
+                reg_urls.add(e["url"].rstrip("/"))
+        for t in rj.get("tombstones", []):     # culled = handled, not pending
+            if t.get("hash"):
+                reg_hashes.add(t["hash"])
+            if t.get("url"):
+                reg_urls.add(t["url"].rstrip("/"))
+    except Exception:
+        pass
+    try:
+        from dwell_learn import UPLOAD_KIND, _hash_file, _read_manifest
+    except Exception:
+        UPLOAD_KIND, _hash_file, _read_manifest = "uploads", None, None
     try:
         for sub in sorted(raw.iterdir()):
             if not sub.is_dir() or sub.name == "assets":
@@ -711,12 +784,53 @@ def _vault_source_list(d: Path) -> list[dict]:
                     continue
                 key = (sub.name, f.stem)
                 ext = f.suffix.lstrip(".")
-                entry = by_key.setdefault(key, {"name": f.stem, "kind": sub.name, "exts": []})
+                entry = by_key.setdefault(key, {"name": f.stem, "kind": sub.name,
+                                                "exts": [], "status": ""})
                 if ext and ext not in entry["exts"]:
                     entry["exts"].append(ext)
+                if not entry["status"]:
+                    if f.name.lower() in reg_names or f.stem.lower() in reg_names:
+                        entry["status"] = "learned"
+                    elif sub.name == UPLOAD_KIND:
+                        # uploads are few — hash to catch an already-ingested re-upload
+                        h = ""
+                        if _hash_file is not None:
+                            try:
+                                h = _hash_file(f)
+                            except Exception:
+                                h = ""
+                        entry["status"] = "learned" if (h and h in reg_hashes) else "pending"
+                    else:
+                        # With a (backfilled) registry present, absence is evidence:
+                        # the file was never ingested → genuinely pending. Without
+                        # one we can't tell → untracked (shown with the learned).
+                        entry["status"] = "pending" if has_registry else "untracked"
     except Exception:
         pass
-    return list(by_key.values())
+    out = list(by_key.values())
+    # the learn manifest's links + research prompt = the rest of the queue
+    if _read_manifest is not None:
+        try:
+            m = _read_manifest(d)
+            for url in m.get("links", []) or []:
+                st = "learned" if url.rstrip("/") in reg_urls else "pending"
+                out.append({"name": url, "kind": "link", "exts": [], "status": st})
+            prompt = (m.get("prompt") or "").strip()
+            if prompt:
+                label = prompt if len(prompt) <= 80 else prompt[:77] + "…"
+                out.append({"name": label, "kind": "research", "exts": [],
+                            "status": "pending"})
+        except Exception:
+            pass
+    # ghost-door PROPOSALS staged by readers (write-back phase 1) — pending until
+    # the reader checks them into a Learn build (accept) or deletes them (reject)
+    try:
+        for f in sorted((d / "wiki" / "_meta" / "proposals").glob("*.md")):
+            out.append({"name": f.stem, "kind": "proposal", "exts": ["md"],
+                        "status": "pending"})
+    except Exception:
+        pass
+    return out
 
 
 def _vault_sources(d: Path) -> int:
@@ -733,6 +847,21 @@ def vault_cover(vault: str) -> FileResponse:
     if cover is None:
         raise HTTPException(status_code=404, detail="no cover")
     return FileResponse(cover)
+
+
+class ExportOkfReq(BaseModel):
+    vault: str
+
+
+@app.post("/vault/export-okf")
+def vault_export_okf(req: ExportOkfReq) -> dict:
+    """Export a vault as an OKF bundle into a sibling '<name>-okf' folder (which the
+    gallery then shows as an importable flat vault — the round trip is the demo)."""
+    d = _resolve_vault_any(req.vault)
+    from okf_export import export as _okf
+    dest = d.parent / (d.name + "-okf")
+    n, k = _okf(d, dest)
+    return {"ok": True, "dest": str(dest), "concepts": n, "links": k}
 
 
 @app.get("/vault-sources")
@@ -777,8 +906,6 @@ def _vault_entry(d: Path, imported: bool) -> dict | None:
     """Cheap probe of one vault dir → a gallery card dict, or None if it isn't a readable
     vault (needs CLAUDE.md + ≥1 wiki page). node count excludes sources/_meta; has_voice
     spots a `the-voice-of-*` page."""
-    if not (d / "CLAUDE.md").is_file():
-        return None
     wiki = d / "wiki"
     nodes, has_voice = 0, False
     for sub in ("concepts", "entities", "syntheses"):
@@ -788,6 +915,24 @@ def _vault_entry(d: Path, imported: bool) -> dict | None:
                 nodes += 1
                 if f.stem.lower().startswith("the-voice-of"):
                     has_voice = True
+    if not (d / "CLAUDE.md").is_file():
+        # OKF bundle: no marker file — a folder of frontmatter'd Markdown IS the
+        # format (DWELL_OKF.md). Count flat concept files instead.
+        if nodes == 0:
+            skip = {"index", "log", "readme", "contributing", "license", "agents"}
+            try:
+                for f in d.glob("*.md"):
+                    if f.stem.lower() in skip:
+                        continue
+                    try:
+                        if f.open(encoding="utf-8", errors="ignore").read(4).startswith("---"):
+                            nodes += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        if nodes == 0:
+            return None
     if nodes == 0:
         return None
     return {"path": str(d), "name": d.name, "nodes": nodes, "has_voice": has_voice,
@@ -1042,8 +1187,22 @@ class PageReq(BaseModel):
     plan_id: str | None = None        # required when action == "plan"
     start: str = "new"                # central | new | surprise | resume (action==first)
     seed: str | None = None           # start at this exact node id (action==first)
+    path_id: str | None = None        # walk a curated Path's frozen spine (action==first)
     wander: float | None = None       # set the walk's step size on this/first page
     diffusing: bool = True            # each frame is the full refining text (Mercury)
+
+
+def _path_block(s: DwellSession) -> dict:
+    """Path progress for the client: current gate (1-indexed), total, complete.
+    Empty-ish when not on a path."""
+    nav = s.nav
+    spine = getattr(nav, "spine", []) or []
+    gates = len(spine)
+    gate = min(getattr(nav, "i", 0) + 1, gates) if gates else 0
+    base = dict(s.path or {})
+    base.update({"gate": gate, "gates": gates,
+                 "complete": bool(getattr(nav, "complete", False))})
+    return base
 
 
 def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
@@ -1052,8 +1211,42 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
     toward it), render (cache-first, streamed if live), then propose branches."""
     if req.action == "first":
         s.wander = DEFAULT_WANDER if req.wander is None else float(req.wander)
-        seed = req.seed if (req.seed and req.seed in s.brain.nodes) else None
-        s.nav = Navigator(s.brain, seed, s.wander, s.rng, s.history, start=req.start)
+        if req.path_id:                             # walk a curated Path's frozen spine
+            if req.path_id == "__generated__":      # an ephemeral, generator-made spine
+                pdata = s.generated_path
+            else:
+                pdata = load_path(VaultPaths.for_vault(s.vault_path), req.path_id)
+            if pdata is None:
+                emit("error", {"message": f"unknown path '{req.path_id}'"})
+                return
+            resolved, missing = resolve_spine(pdata, s.brain.nodes)
+            if not resolved:
+                emit("error", {"message": f"path '{req.path_id}' has no resolvable anchors"})
+                return
+            lens = pdata.get("lens") or {}          # apply the path's lens in place
+            if lens.get("form"):
+                s.renderer.set_form(lens["form"])
+            if lens.get("level"):
+                s.renderer.set_level(lens["level"])
+            if lens.get("voice"):
+                s.renderer.set_voice(lens["voice"])
+            if lens.get("language"):
+                s.renderer.set_language(lens["language"])
+            dv = lens.get("dream")                   # paths read as narrative by default;
+            s.renderer.set_dream(0.35 if dv is None else float(dv))   # a path may set/opt out
+            s.nav = PathNavigator(s.brain, resolved, s.rng, s.history,
+                                  goal=pdata.get("goal") or "",
+                                  confluence=bool(pdata.get("confluence", True)),
+                                  dwell_cap=int(pdata.get("dwell_cap", 0)),
+                                  intents=pdata.get("intents"),
+                                  tween_density=int(pdata.get("tween_density", 3)))
+            s.path = {"id": pdata.get("id"), "title": pdata.get("title") or pdata.get("id"),
+                      "goal": pdata.get("goal") or "", "gates": len(resolved),
+                      "missing": missing}
+        else:
+            seed = req.seed if (req.seed and req.seed in s.brain.nodes) else None
+            s.nav = Navigator(s.brain, seed, s.wander, s.rng, s.history, start=req.start)
+            s.path = None
         s.tail = ""
         s.pending_plan = None
         s.proposed.clear()
@@ -1077,9 +1270,13 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
     else:  # auto / flow — reuse the predicted page if we have one (no extra RNG)
         plan = s.pending_plan or nav.plan_auto()
 
+    if plan is None:                            # a PathNavigator reached end-of-spine
+        emit("path_done", _path_block(s))
+        return
+
     nav.commit(plan)
     s.pending_plan = nav.plan_auto()            # predict the next page...
-    hint = nav.hint_for(s.pending_plan)         # ...so this page leans toward it
+    hint = nav.hint_for(s.pending_plan) if s.pending_plan is not None else ""
     recap = nav.recap()
     key = s.renderer.cache_key(plan)
     # Remember this page's render context so it can be re-pitched to another level
@@ -1115,6 +1312,8 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
 
     s.tail = text
     s.history.save()
+    if plan.mode == "ghost" and plan.ghost and not s.renderer.dry:
+        _stage_ghost_proposal(s, plan, text)
     node = s.brain.nodes.get(plan.node)
     imgs = _page_images(s, node, plan)
     emit("done", {
@@ -1122,6 +1321,8 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
         "marker": marker, "recap": recap, "steer_bucket": plan.steer_bucket,
         "sources": _source_titles(s, node.sources) if node else [],
         "cost": _cost(s), "branches": _branches(s), "form": s.renderer.form,
+        "dream": s.renderer.dream,
+        **({"path": _path_block(s)} if s.path else {}),
         **imgs,
         **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images"))),
     })
@@ -1210,6 +1411,8 @@ def _reproduce_page(s: DwellSession, index: int, emit) -> None:
         "marker": marker, "recap": lr["recap"], "steer_bucket": plan.steer_bucket,
         "sources": _source_titles(s, node.sources) if node else [],
         "cost": _cost(s), "branches": _branches(s), "form": s.renderer.form,
+        "dream": s.renderer.dream,
+        **({"path": _path_block(s)} if s.path else {}),
         **imgs,
         **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images"))),
     })
@@ -1364,7 +1567,7 @@ class FormReq(BaseModel):
 @app.post("/form")
 def set_form(req: FormReq) -> dict:
     s = _require_session(req.session)
-    s.renderer.set_form(req.name)    # article/steps/qa/dialogue; unknown → article
+    s.renderer.set_form(req.name)    # any key of dwell.FORMS; unknown → article
     return {"ok": True, "form": s.renderer.form}
 
 
@@ -1379,6 +1582,83 @@ def set_language(req: LanguageReq) -> dict:
     s = _require_session(req.session)
     s.renderer.set_language(req.name)   # preset or free text; 'source' → no translation
     return {"ok": True, "language": s.renderer.language}
+
+
+# ---- creativity / 'dream' dial (0..1 — re-pitched in place via /repage) ------
+class DreamReq(BaseModel):
+    session: str
+    value: float
+
+
+@app.post("/dream")
+def set_dream(req: DreamReq) -> dict:
+    s = _require_session(req.session)
+    s.renderer.set_dream(req.value)     # 0 faithful … 1 dramatize; scales invention + temperature
+    return {"ok": True, "dream": s.renderer.dream}
+
+
+# ---- curated Paths (spine list; start one via /page action=first path_id=) --
+@app.get("/paths")
+def paths(session: str) -> dict:
+    """Curated Paths available for this vault (`_meta/paths/*.json`). Start one
+    by calling /page action=first with `path_id`; the PathNavigator then walks
+    its frozen spine and the path's lens is applied in place."""
+    s = _require_session(session)
+    return {"paths": list_paths(VaultPaths.for_vault(s.vault_path))}
+
+
+class GenerateReq(BaseModel):
+    session: str
+    length: int = 5
+    temperature: float = 0.6
+
+
+def _narrativize(s: DwellSession, spine: list[str], titles: list[str]) -> dict:
+    """Name a generated arc — one LLM call when live, else a mechanical title.
+    (Diversity lives in the spine; this only labels it.)"""
+    ta = titles[0] if titles else "start"
+    tb = titles[-1] if titles else "end"
+    fallback = {"title": f"{ta} → {tb}", "goal": f"A path from {ta} to {tb}."}
+    if s.renderer.dry or not spine:
+        return fallback
+    try:
+        sysmsg = ("You name a short guided reading path through a knowledge vault. "
+                  "Reply with ONLY a JSON object {\"title\": \"…\", \"goal\": \"one sentence\"}.")
+        usr = ("The path visits these pages in order:\n- " + "\n- ".join(titles)
+               + "\n\nGive it a short evocative title (≤ 8 words) and a one-sentence goal "
+                 "describing what the reader comes to understand by the end.")
+        text, in_tok, out_tok = s.renderer._complete(sysmsg, usr, diffusing=False)
+        try:
+            s.renderer.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                                 model=s.renderer.model, is_sub_call=True)
+        except Exception:
+            pass
+        i, j = text.find("{"), text.rfind("}")
+        if i >= 0 and j > i:
+            obj = json.loads(text[i:j + 1])
+            title = (str(obj.get("title") or "").strip() or fallback["title"])[:80]
+            goal = (str(obj.get("goal") or "").strip() or fallback["goal"])[:220]
+            return {"title": title, "goal": goal}
+    except Exception:
+        pass
+    return fallback
+
+
+@app.post("/paths/generate")
+def generate_path(req: GenerateReq) -> dict:
+    """Generate a fresh, diverse-but-coherent spine (wander→narrativize;
+    DWELL_PATHS.md) and stash it on the session. Walk it via /page action=first
+    with path_id="__generated__". Different every call (stochastic graph walk)."""
+    s = _require_session(req.session)
+    length = max(3, min(9, int(req.length or 5)))
+    spine = generate_spine(s.brain, s.rng, length=length,
+                           temperature=float(req.temperature or 0.6), history=s.history)
+    titles = [s.brain.nodes[n].title for n in spine if n in s.brain.nodes]
+    meta = _narrativize(s, spine, titles)
+    s.generated_path = {"id": "__generated__", "title": meta["title"], "goal": meta["goal"],
+                        "spine": spine, "lens": {"form": "guided"}}
+    return {"id": "__generated__", "title": meta["title"], "goal": meta["goal"],
+            "gates": len(spine), "spine": spine, "titles": titles, "cost": _cost(s)}
 
 
 # ---- popular nodes (sidebar) ----------------------------------------------

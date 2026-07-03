@@ -57,7 +57,7 @@ Do **not** build "tutorial vaults," "course vaults," "FAQ vaults." Any vault ren
 as any of those. **A tutorial is a recipe, not a vault:**
 
 ```
-tutorial  =  form: steps  ×  traversal: goal-path  ×  gate: quiz
+tutorial  =  form: tutorial  ×  traversal: goal-path  ×  gate: quiz
 ```
 
 …applied to a neutral vault (the quiz gate reuses the existing retrieval-practice
@@ -89,7 +89,7 @@ elementary level, the scholar, the kid who wants a story, the FAQ-seeker, the
 debate-club kid — none pre-authored. Nobody ships the same book as forty documents;
 Dwell ships the substrate and generates the forty on demand. The vault is a
 **capital good** (one-time ingest cost; output is generated, not stored) →
-subscription / site-license economics.
+subscription / site-license economics. See [[project_dwell_education]].
 
 ## Design commitments (build by these)
 1. The vault encodes **meaning, never form**.
@@ -112,9 +112,13 @@ subscription / site-license economics.
 ## Status — live vs planned (keep current)
 - **Live axes:** reading level (elementary→scholar, in place), narrator voice (vault
   voices + presets + free-text custom), output **form** (article / guided tour / Q&A /
-  dialogue — shipped 2026-06-21; tutorial = `form=guided`). Form directives are
-  grounded in each genre's established conventions (Diátaxis explanation-vs-how-to;
-  the Socratic elenchus; FAQ/Q&A layout) — see `DWELL_ROADMAP.md`.
+  dialogue — shipped 2026-06-21; story / tutorial / brief / case study / interview /
+  debate / letters / chronicle — shipped 2026-07-03). Form directives are grounded in
+  each genre's established conventions (Diátaxis explanation-vs-tutorial; the Socratic
+  elenchus; FAQ/Q&A layout). On a guided path, forms with phase entries are
+  **arc-aware** — a tutorial's first beat orients and its last consolidates; a story's
+  first beat opens the arc and its last lands it (`_FORM_PHASES` in `dwell.py`) — which
+  supersedes the earlier "tutorial = `form=guided`" stance. See `DWELL_ROADMAP.md`.
 - **Planned Tier-1 axes:** **lens / stance** (historian / skeptic / mystic /
   mathematician / practitioner), **length / pace**, **abstraction**.
 - **Planned Tier-2 views:** timeline, comparison, glossary, study guide, concept map.
@@ -124,8 +128,9 @@ subscription / site-license economics.
   `DWELL_ROADMAP.md`. Always the general primitive, never a vertical.
 
 ## Related
-- Roadmap: `DWELL_ROADMAP.md`.
+- Architecture + handoff: `DWELL_HANDOFF.md`, `DWELL_APP_PLAN.md`.
 - Engine prompting: `MERCURY_PROMPT_GUIDE.md`.
-- Vault on-disk format: `VAULT_FORMAT.md`.
+- Memory: [[project_the_current]] (Dwell project log) · [[project_dwell_education]]
+  (education-mode + vault economics).
 
 *Authored 2026-06-21.*

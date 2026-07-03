@@ -76,7 +76,7 @@ structure — block-level only, so the karaoke/clarify/quiz offset-map stays int
   Titles = a separate heading field (never an offset-map concern; just reserve its
   height in `domFit`). Standard practice (read-along/immersive-reader) = one formatted
   DOM + ranges, confirmed via the CSS Highlight spec + MDN.
-Validated live on a real vault node (a genuine elenchus that ends "I concede
+Validated live on the MPH **Atlantis** node (a genuine elenchus that ends "I concede
 the tablet likely held a concise chronicle and that Plato added symbolic meaning").
 Built exactly as below (kept for reference):
 
@@ -99,7 +99,7 @@ Seed set: **article, steps, Q&A, dialogue** (confirmed).
 ---
 
 ## PARALLEL UPSTREAM — universal ingest enrichment ← the substrate investment
-**Universal ingest enrichment (PLANNED).** Key
+**→ Detailed spec: [`DWELL_ENRICH_PLAN.md`](DWELL_ENRICH_PLAN.md) (PLANNED 2026-06-23).** Key
 finding + locked decisions: **4 of the 5 data points are nearly FREE** (salience←backlinks;
 terms←page title/summary/aliases; claims+provenance←the grounding engine; `contradicts`←the
 ledger; dates←regex) — the ONLY thing needing an LLM is **typing the edges**. Approach =
@@ -155,6 +155,50 @@ A different *view* of the data, not a restyle of one page (re-traversal / aggreg
 - **study guide** ← claims + salience
 - **concept map / index** ← typed edges
 - **annotated bibliography** ← provenance
+- **paths / guided journeys** ← goal-path traversal + gates + tempo + dream — the
+  `traversal × gate` primitive; spans education↔fiction. **Spec: `DWELL_PATHS.md`.**
+
+---
+
+## THEN — Paths: the directed reader (`traversal × gate`) — spec: `DWELL_PATHS.md` (PLANNED 2026-06-30)
+The **itinerary axis** — *which* nodes, in *what* order, and *how* the reader is carried
+between them — layered on top of free-wander (which is untouched). **One system spans
+education → fiction via a Convey→Dramatize dial** (a node is a *payload to convey*, or
+*canon for a dreamed scene*; the middle = scenario/simulation, which upgrades tutorials
+too). Resolved architecture:
+- **Frozen spine of gates** — committed once at session start (authored *or*
+  agent-rolled), then immutable; **guarantees arrival**. Steering never re-plans the
+  destination, only the corridor. (Simplifies the horizon buffer: top resolution is
+  fixed per session.)
+- **Fluid corridors** — tempo = tween/**confluence-frame** count, **authored + adaptive**;
+  **dwell expands in place** (deepen, don't advance), skim → **montage**.
+- **Horizon buffer** (three resolutions: arc-skeleton / committed-intent / committed-prose)
+  — **generate ahead, reveal late** (tweens build toward a hidden keyframe = mechanized
+  setup-and-payoff / pedagogical scaffolding).
+- **Weaver + resolution tracker** — a Path is a **braid of arcs** (main + subplots);
+  the **dream dial = emergence budget**; every opened thread gets a `resolve_by`
+  deadline → **wild in the middle, tidy at the seams**.
+- **Gates** — `beat`/`read`/`self-report`/`quiz`/`task`; quiz reuses retrieval-practice
+  + `enrich` claims (no manual authoring); **fail → remediate → retry** (= a strong
+  dwell signal). `canon_strictness` decides block-vs-advisory.
+
+Depends on **`enrich`** (planner substrate; gap→Learn re-plan), **form** (per-node lens),
+**voices** (POV), **retrieval-practice** (gates), **Mercury/`/repage`** (render),
+**reading-memory** (continuity + playthroughs). Build order in `DWELL_PATHS.md`
+(Phase 0 = frozen-spine + `read`-gates on the existing `/repage`, no tweens).
+
+---
+
+## Interop — Open Knowledge Format (OKF) — spec: `DWELL_OKF.md` (PLANNED 2026-07-01)
+Google's **OKF** (v0.1) standardizes ~exactly the Dwell vault (Markdown + YAML frontmatter,
+cross-linked graph, `index.md`/`log.md`, `type`-only-required, "format not platform",
+producer/consumer split — "formalizes the LLM-wiki pattern"). **Decision: converge via a thin
+compat layer, not a rewrite** — read BOTH `[[wikilinks]]` and OKF `[text](/path.md)` links,
+alias the frontmatter (`description`↔`summary`, `timestamp`↔`updated`, `resource`; path-as-id),
+make the vault marker optional (also settles CLAUDE.md→AGENTS.md). Then Dwell can render ANY
+OKF bundle → **Dwell = the diffusion reader on a standard substrate.** The ONE engine change is
+a Markdown-link regex beside `_WIKILINK_RE` in `Brain.load`; everything above the substrate
+(Paths, confluence, transforms) is untouched. Build order in `DWELL_OKF.md`.
 
 ---
 
@@ -162,7 +206,7 @@ A different *view* of the data, not a restyle of one page (re-traversal / aggreg
 - `magazine` auto-rotation: keep or cut the 3-column reflow.
 - Multi-image layout cadence (every-other feasible page → maybe rarer).
 - Cross-reload vault-stash persistence (localStorage + rehydrate; today in-memory only).
-- Covers for vaults that lack an explicit `cover.jpg`.
+- Covers for the other vaults (only Pythagoras has an explicit `cover.jpg`).
 - A real foreground/tablet listen for audio (only plumbing verified headless).
 
 ## Pre-existing roadmap (from before this arc)

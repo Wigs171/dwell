@@ -13,7 +13,7 @@
         onclick={() => dwell.requestAdvance({ action: 'plan', plan_id: b.plan_id })}
         title={b.ready ? 'already rendered — instant' : ''}
       >
-        {b.mode === 'dwell' ? '↻ Dwell here' : '→ ' + b.title}
+        {b.mode === 'dwell' ? '↻ Dwell here' : b.mode === 'ghost' ? '◌ ' + b.title + ' · unwritten' : '→ ' + b.title}
       </button>
     {/each}
   </div>

@@ -14,7 +14,11 @@ export interface Endpoint {
   has_key: boolean; enabled: boolean; models: string[];
 }
 // A source document listed in the knowledge-base detail view (format variants merged).
-export interface VaultSource { name: string; kind: string; exts: string[]; }
+// status: learned (in the ingest registry) | pending (awaiting a build: new upload,
+// manifest link, research prompt) | untracked (pre-registry legacy file).
+export interface VaultSource { name: string; kind: string; exts: string[]; status?: 'learned' | 'pending' | 'untracked' | ''; }
+// A quick text look inside one raw source (GET /learn/peek).
+export interface SourcePeek { name: string; kind: string; text: string; note: string; truncated: boolean; }
 
 // Learn (vault-builder) intake — the curate-step state of a draft knowledge base.
 export interface LearnFile { id: string; name: string; ext: string; size: number; status?: 'new' | 'duplicate'; }
@@ -72,12 +76,24 @@ export interface TextFigureView {
   payload: { text?: string };   // pull-quote: the verbatim line; drop-cap: empty
 }
 
+// ---- Curated Paths (DWELL_PATHS.md) ----
+// A curated Path available for a vault (server: /paths → _meta/paths/*.json).
+export interface PathInfo { id: string; title: string; goal: string; gates: number; }
+// Live progress while walking a Path's frozen spine (server: _path_block on every page).
+export interface PathProgress {
+  id: string; title: string; goal?: string;
+  gate: number; gates: number; complete: boolean;
+  missing?: string[];
+}
+
 export interface PageDone {
   text: string; node: string; title: string; mode: string; marker: string;
   recap: string; cost: number; branches: Branch[]; steer_bucket: string;
   sources: string[]; form?: string;
   images: PageFigure[]; layout: LayoutId | null;   // image-aware reading layout
   text_figure?: TextFigureView | null;             // derived text-figure (no-image pages)
+  path?: PathProgress;                             // present only while walking a curated Path
+  dream?: number;                                  // active creativity dial (0..1) at render time
 }
 export interface ExpandDone { text: string; cost: number; }
 export interface MissedPair { a: string; b: string; sim: number; title_a: string; title_b: string; }
