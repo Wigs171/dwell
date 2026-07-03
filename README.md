@@ -17,13 +17,24 @@ vaults for you from your own files, links, or a topic, using an agent pipeline.
 
 ## What's in the box
 
+**Reading features:** twelve output *forms* (article, guided tour, Q&A, dialogue, story,
+tutorial, brief, case study, interview, debate, letters, chronicle) that re-pitch the same
+vault in place — arc-aware on a guided path (a tutorial's first beat orients, its last
+consolidates); **Guided Paths** (a firm spine of beats with fluid tween corridors between
+them, generated or authored); a **creativity dial** from faithful conveyance to dreamed
+scene; **ghost doors** — unwritten links render as threshold pages, and what you find is
+staged as a *proposal* the vault can grow by (accepted only through a Learn build);
+**OKF interop** — read any [Open Knowledge Format](docs/DWELL_OKF.md) bundle as a vault
+and export any vault as one (lossless round trip, one click from the vault card).
+
+
 | Path | What it is |
 |------|------------|
 | `server/` | FastAPI backend (`dwell_server.py`) + the reader engine (`dwell.py`), Learn intake/build (`dwell_learn.py`, `dwell_build.py`), provider keys (`dwell_endpoints.py`), and optional TTS (`dwell_tts.py`). |
 | `web/` | The frontend — Svelte 5 + Vite (TypeScript). The reading UI, themes, settings, narration, and the Learn screens. |
 | `compendium/` | The vault engine + ingest agents that **Learn** drives to build vaults. |
 | `cli.py` | Command-line vault builder: `init`, `ingest`, `research`, `loop`, `enrich`, `explore`, `split-book`. |
-| `vaults/` | Your knowledge bases. Two bundled demos live here: **`Biology 101 (Demo)`** and **`Cosmos (Japanese Demo)`** (a Japanese-language vault for demoing live translation). |
+| `vaults/` | Your knowledge bases. Three bundled demos: **`Biology 101 (Demo)`**, **`Cosmos (Japanese Demo)`** (live translation), and **`Cael Morren`** — an original fiction world built for guided paths, the dream dial, and ghost doors. |
 | `docs/` | Design docs and the [vault format spec](docs/VAULT_FORMAT.md). |
 | `tests/` | A smoke test for the server (`dwell_smoke.py`). |
 
