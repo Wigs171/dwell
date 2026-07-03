@@ -20,7 +20,7 @@ interface Word { cs: number; ce: number; t0: number; t1: number; }
 export class AudioNarrator {
   available = false;
   voices: string[] = [];
-  defaultVoice = 'bm_george';
+  defaultVoice = 'af_heart';
 
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
@@ -52,7 +52,7 @@ export class AudioNarrator {
       const d = await api.ttsVoices();
       this.available = d.available;
       this.voices = d.voices ?? [];
-      this.defaultVoice = d.default || 'bm_george';
+      this.defaultVoice = d.default || 'af_heart';
     } catch { this.available = false; }
   }
 

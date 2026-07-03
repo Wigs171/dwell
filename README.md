@@ -118,6 +118,19 @@ fallbacks, so nothing is required up front:
 - **Audio narration** (`kokoro-onnx`, ~hundreds of MB) gives high-quality local
   text-to-speech. Install with `pip install -e ".[tts]"`. Without it, the
   browser's Web Speech API is used.
+- **More natural narration** (optional, recommended): Kokoro's default espeak
+  phonemizer sounds flat; the [misaki](https://github.com/hexgrad/misaki) G2P (its
+  purpose-built pronunciation dictionaries) makes the same voices markedly less
+  robotic at no extra runtime cost. Enable with:
+
+  ```bash
+  pip install -e ".[tts-natural]"
+  python -m spacy download en_core_web_sm     # small CNN model for POS tagging
+  ```
+
+  It's used automatically when present (espeak fallback for out-of-dictionary words);
+  set `DWELL_TTS_G2P=espeak` to force the old path. *Install base misaki + spaCy only —
+  do **not** `pip install misaki[en]`, which pulls a torch-heavy transformer dep.*
 
 ---
 

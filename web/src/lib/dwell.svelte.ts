@@ -157,7 +157,7 @@ class DwellStore {
   narrating = $state(false);          // audio currently playing
   ttsAvailable = $state(false);
   ttsVoices = $state<string[]>([]);
-  ttsVoice = $state('bm_george');
+  ttsVoice = $state('af_heart');
   ttsSpeed = $state(1);
   ttsVolume = $state(1);              // narration volume 0–1
   spoken = $state<{ key: number; cs: number; ce: number } | null>(null);  // word being read
@@ -308,6 +308,11 @@ class DwellStore {
     this.ttsVoices = this.narrator.voices.length ? this.narrator.voices : [this.narrator.defaultVoice];
     this.narrate = ls.get('dwell-narrate') === '1';
     this.autoflow = ls.get('dwell-autoflow') === '1';
+    // one-time upgrade: the old default (bm_george, grade C) was retired for the
+    // grade-A blend; move anyone still on it unless they re-pick it themselves.
+    if (ls.get('dwell-tts-voice') === 'bm_george' && !ls.get('dwell-tts-v2')) {
+      ls.set('dwell-tts-v2', '1'); ls.set('dwell-tts-voice', this.narrator.defaultVoice);
+    }
     this.ttsVoice = ls.get('dwell-tts-voice') || this.narrator.defaultVoice;
     this.ttsSpeed = num(ls.get('dwell-tts-speed'), 1);
     this.ttsVolume = num(ls.get('dwell-tts-volume'), 1);

@@ -17,6 +17,7 @@ Model files (~340 MB, downloaded once to ~/.cache/kokoro-onnx):
 
 from __future__ import annotations
 
+import os
 import queue
 import re
 import threading
@@ -30,14 +31,130 @@ VOICES_FILE = "voices-v1.0.bin"
 _BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 _URLS = {MODEL_FILE: f"{_BASE}/{MODEL_FILE}", VOICES_FILE: f"{_BASE}/{VOICES_FILE}"}
 
-# A curated subset of Kokoro's 54 voices — good long-form narrators. The full
-# list is available via Narrator.all_voices() once the model is loaded.
+# A curated subset of Kokoro's 54 voices — good long-form narrators, QUALITY-FIRST.
+# Kokoro grades its voices A–D (model card VOICES.md); the C/D voices are the ones
+# that read as robotic, so the defaults lead with the A/B tier. A name may also be a
+# BLEND — "af_heart+af_bella" (50/50) or "af_heart*0.7+af_bella*0.3" — mixed from the
+# style vectors at synthesis time (free: no model change, smooths prosody/warmth).
 NARRATOR_VOICES = [
-    "bm_george", "bm_lewis", "bm_fable", "bf_emma", "bf_alice",
-    "am_michael", "am_adam", "am_onyx", "am_eric",
-    "af_heart", "af_bella", "af_nicole", "af_sarah",
+    "af_heart",                    # A — the best narrator in the pack
+    "af_bella",                    # A-
+    "af_heart+af_bella",           # blend: warm + expressive
+    "af_nicole", "bf_emma",        # B-
+    "af_heart+bf_emma",            # blend: US warmth, UK measure
+    "am_fenrir", "am_michael",     # C+ — best of the males
+    "am_fenrir+am_michael",        # blend: steadiest male narrator
+    "bm_george", "bm_fable",       # C — kept for continuity (former default)
+    "af_sarah",
 ]
-DEFAULT_NARRATOR_VOICE = "bm_george"
+DEFAULT_NARRATOR_VOICE = "af_heart"
+DEFAULT_SINGLE_VOICE = "af_heart"   # a real single voice, for blend-resolution fallback
+
+# One blend term: "af_heart" or "af_heart*0.7". Names are Kokoro's <lang><sex>_<name>.
+_BLEND_TERM = re.compile(r"^([a-z]{2}_[a-z]+)(?:\*(\d*\.?\d+))?$")
+
+
+def _resolve_voice(k, voice):
+    """A voice is either a Kokoro voice name (passed through) or a BLEND spec
+    "a+b" / "a*0.7+b*0.3" — averaged style vectors (Kokoro's own default `af` is a
+    blend, so this is the intended mechanism). Returns a name or a float32 ndarray;
+    on any parse/lookup failure, falls back to the first term or the default name."""
+    if "+" not in voice:
+        return voice
+    terms = []
+    for part in voice.split("+"):
+        m = _BLEND_TERM.match(part.strip())
+        if not m:
+            continue
+        terms.append((m.group(1), float(m.group(2)) if m.group(2) else 1.0))
+    if not terms:
+        return DEFAULT_SINGLE_VOICE
+    try:
+        total = sum(w for _, w in terms) or 1.0
+        style = None
+        for name, w in terms:
+            s = k.get_voice_style(name) * (w / total)
+            style = s if style is None else style + s
+        return style
+    except Exception:                     # unknown voice etc. — degrade to a real name
+        return terms[0][0]
+
+
+# --- G2P: misaki (preferred) vs kokoro's built-in espeak (fallback) --------------------
+# Kokoro's "robotic" flatness is largely a PHONEMIZER artifact: kokoro-onnx defaults to
+# espeak-ng, but Kokoro's natural prosody comes from misaki (its purpose-built G2P with
+# real pronunciation dictionaries + stress marking; espeak is meant only as the OOV
+# fallback). When misaki is installed we phonemize with it — same model, same speed, less
+# robotic — and feed the phonemes to Kokoro via create(is_phonemes=True). If misaki isn't
+# installed (e.g. a fresh open-source clone), we transparently use kokoro's espeak path.
+# Force the old path with DWELL_TTS_G2P=espeak.
+_g2p = None
+_g2p_tried = False
+_g2p_lock = threading.Lock()
+
+
+def _misaki_g2p():
+    """Lazily build misaki's English G2P (dictionaries + espeak fallback for OOV words,
+    reusing the espeak-ng lib kokoro-onnx already ships). Returns None if unavailable →
+    caller falls back to kokoro's own espeak phonemization."""
+    global _g2p, _g2p_tried
+    if _g2p_tried:
+        return _g2p
+    with _g2p_lock:
+        if _g2p_tried:
+            return _g2p
+        _g2p_tried = True
+        if os.environ.get("DWELL_TTS_G2P", "").lower() == "espeak":
+            return None
+        try:
+            import espeakng_loader
+            espeakng_loader.make_library_available()
+            lib, data = espeakng_loader.get_library_path(), espeakng_loader.get_data_path()
+            # the shipped espeak-ng DLL has a stale build-time data path baked in; point
+            # every resolver (env + wrapper) at the real bundled data dir, or it fails on
+            # OOV words with "D:/a/.../phontab: No such file or directory".
+            os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = lib
+            os.environ["PHONEMIZER_ESPEAK_PATH"] = data
+            os.environ["ESPEAK_DATA_PATH"] = data
+            try:
+                from phonemizer.backend.espeak.wrapper import EspeakWrapper
+                EspeakWrapper.set_library(lib)
+                if hasattr(EspeakWrapper, "set_data_path"):
+                    EspeakWrapper.set_data_path(data)
+            except Exception:  # noqa: BLE001
+                pass
+            from misaki import en, espeak
+            try:
+                fb = espeak.EspeakFallback(british=False)
+            except Exception:  # noqa: BLE001 — no OOV fallback, dictionaries still work
+                fb = None
+            _g2p = en.G2P(trf=False, british=False, fallback=fb)
+        except Exception:  # noqa: BLE001 — misaki not installed → espeak path
+            _g2p = None
+        return _g2p
+
+
+def _phonemes_for(sentence: str) -> str | None:
+    """misaki phonemes for one sentence, or None to signal 'use kokoro's espeak path'."""
+    g = _misaki_g2p()
+    if g is None:
+        return None
+    try:
+        with _g2p_lock:                      # spacy pipeline isn't reentrant across threads
+            ph, _ = g(sentence)
+        return ph or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _create(k, sentence: str, voice, speed: float):
+    """One Kokoro synthesis for a sentence — via misaki phonemes when available, else
+    kokoro's built-in espeak phonemization. Returns (samples, sr)."""
+    ph = _phonemes_for(sentence)
+    if ph:
+        return k.create(ph, voice=voice, speed=speed, is_phonemes=True)
+    return k.create(sentence, voice=voice, speed=speed, lang="en-us")
+
 
 _SENT_RE = re.compile(r"[^.!?…]+[.!?…]+[\"”')\]]*|\S[^.!?…]*$")
 
@@ -216,8 +333,8 @@ class Narrator:
                 if epoch != self._epoch:
                     break          # superseded by a newer speak()/stop()
                 try:
-                    samples, _sr = self._k.create(
-                        s, voice=self._voice, speed=self._speed, lang="en-us")
+                    samples, _sr = _create(
+                        self._k, s, _resolve_voice(self._k, self._voice), self._speed)
                 except Exception:  # noqa: BLE001 — skip a bad chunk, keep going
                     continue
                 if epoch != self._epoch:
@@ -283,8 +400,13 @@ def _load_web_kokoro():
 
 
 def list_web_voices() -> list[str]:
+    # Curated grade-A-first list + blends LEAD, then the rest of the 54 alphabetically —
+    # so the picker opens on the good voices and the blends are selectable.
     try:
-        return sorted(_load_web_kokoro().get_voices())
+        allv = set(_load_web_kokoro().get_voices())
+        rest = sorted(v for v in allv if v not in NARRATOR_VOICES)
+        lead = [v for v in NARRATOR_VOICES if "+" in v or v in allv]
+        return lead + rest
     except Exception:  # noqa: BLE001
         return list(NARRATOR_VOICES)
 
@@ -312,7 +434,7 @@ def synth_wavs(text: str, voice: str = DEFAULT_NARRATOR_VOICE, speed: float = 1.
     sp = max(0.5, min(2.0, float(speed)))
     for s in _split_sentences(text):
         try:
-            samples, sr = k.create(s, voice=v, speed=sp, lang="en-us")
+            samples, sr = _create(k, s, _resolve_voice(k, v), sp)
         except Exception:  # noqa: BLE001 — skip a bad chunk, keep going
             continue
         if samples is not None and len(samples):
