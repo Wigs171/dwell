@@ -645,6 +645,7 @@ class PagePlan:
     next_locked: bool = False # PATH page: the NEXT page is certainly `toward` → the close may lean
     ghost: str = ""           # GHOST page: the unwritten link id this threshold renders (else "")
     canon: str = ""           # PATH page: the CANON SINK — established figures/elements, pinned (else "")
+    avoid_openings: str = ""  # PATH page: recent page openings, to vary this one's entry (else "")
 
     @property
     def material(self) -> str:
@@ -1065,6 +1066,11 @@ class PathNavigator(Navigator):
         # first-seen order, pinned into every path page so the rolling tail/recap can't
         # rotate identities out of existence. Fed by observe_canon() after each render.
         self.canon: list[str] = []
+        # OPENING VARIETY — the flip side of the sink: the sink keeps WHO/WHAT stable,
+        # this keeps HOW each page ENTERS varied. Without it the sink's pinned figure
+        # gets opened on every page ("Maren did X" ×N), which reads as the same idea
+        # repeated. We feed the last few openings back as a "don't enter like these" hint.
+        self.recent_openings: list[str] = []
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1143,6 +1149,11 @@ class PathNavigator(Navigator):
                 self.canon = [c for c in self.canon if not (c != r and c in r)]
                 self.canon.append(r)
         self.canon = self.canon[:10]
+        # capture this page's opening (first ~14 words) for the anti-monotony hint
+        opening = " ".join(text.split()[:14]).strip()
+        if opening:
+            self.recent_openings.append(opening)
+            self.recent_openings = self.recent_openings[-3:]
 
     def _corridor_density(self, a: str, b: str) -> int:
         """Distance-aware tween density (V2's motion-aware noise): distant gates are
@@ -1235,7 +1246,8 @@ class PathNavigator(Navigator):
             came_from=self.came_from, steer_bucket=self.steer_bucket(),
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
-            arc_outline=self._outline(self.i), canon="; ".join(self.canon))
+            arc_outline=self._outline(self.i), canon="; ".join(self.canon),
+            avoid_openings=" / ".join(self.recent_openings))
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1260,6 +1272,7 @@ class PathNavigator(Navigator):
                                                   or self.tween_density <= 0)
         plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
         plan.canon = "; ".join(self.canon)      # the sink rides every path page
+        plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
         # node once between them, and the arrival never re-reads tween material.
@@ -2401,6 +2414,18 @@ class Renderer:
                 path_frame += (
                     f"ESTABLISHED so far (keep these stable — reuse them; never invent "
                     f"replacements for what already exists): {plan.canon}\n\n")
+            if plan.avoid_openings:
+                # Keep the cast/canon stable but VARY the entry — the recent pages all
+                # opened the same way (the pinned figure taking a physical action), which
+                # reads as the same idea repeated. Enter through a different door.
+                path_frame += (
+                    f"RECENT PAGES OPENED WITH — do NOT open this one like any of these; the "
+                    f"first sentence must not reuse their opening figure, action, OR image/"
+                    f"object (if they opened on a lantern/brass/the water, yours must not): "
+                    f"«{plan.avoid_openings}». Enter from a genuinely different angle — a shift "
+                    f"in time or place, a sound or other sense, a line of speech, a wider view, "
+                    f"or a fresh object — THEN carry the thread on. Same story and cast, a "
+                    f"doorway you have not used yet.\n\n")
             # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
             # job; a tween is motion between beats and doesn't need the outline's weight.
             if plan.arc_outline and plan.mode != "bridge":
