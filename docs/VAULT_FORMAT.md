@@ -84,3 +84,23 @@ These are created/maintained by the tools and are git-ignored:
 - `expansion.md`, `contradictions.md`, `orphans.md` — builder reports.
 
 You never edit these by hand; delete them and they regenerate.
+
+## OKF interop (accepted variations)
+
+Dwell also reads [Open Knowledge Format](DWELL_OKF.md) bundles, so the parser accepts
+OKF's dialect of the same substrate: `description` is read as `summary`, `timestamp`
+as `updated`, `type` may be any free string (unknown types load as navigable concepts),
+ordinary Markdown links `[text](slug.md)` count as graph edges beside `[[wikilinks]]`,
+and a flat folder of frontmatter'd Markdown (no `wiki/` tree, no `CLAUDE.md`) is a
+valid vault. Any vault exports to a flat OKF bundle via `server/okf_export.py` or the
+OKF button on the vault card.
+
+## Ghost links and `_meta/proposals/`
+
+A wikilink (or OKF link) with no matching page is not an error — it is an **unwritten
+door**: the reader offers it as a `◌` branch and renders a threshold page from its
+mentions. Reading one stages a draft in `wiki/_meta/proposals/<slug>.md` (frontmatter
+`type: proposal`, `kind: ghost-door`). Proposals appear as pending sources on the
+vault card; checking one into a Learn build ingests it (the draft then moves to
+`proposals/accepted/`), and deleting the file rejects it — the door stays a ghost.
+
