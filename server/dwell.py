@@ -2105,11 +2105,12 @@ class _SimpleCostMeter:
 
 
 def _strip_tail_echo(page: str, tail: str) -> str:
-    """Drop a verbatim tail echo from the page's opening. Mercury frequently begins by
-    copying the quoted CONTINUE FROM lines word-for-word despite the instruction (the
-    quote primes the continuation) — live-tested 2026-07-03: most path pages opened with
-    the previous page's closing sentences. Deterministic fix beats prompt-fighting:
-    if the page's first sentence(s) are (normalized) a suffix of the tail, cut them."""
+    """Drop a (near-)verbatim tail echo from the page's opening. Mercury frequently begins
+    by re-copying the quoted CONTINUE FROM lines despite the instruction (the quote primes
+    the continuation) — live-tested 2026-07-03. It often paraphrases the echo by a word or
+    two ("This distinction…" → "The distinction…"), so an EXACT suffix match misses it;
+    match FUZZILY instead: if a leading sentence-run of the page is ~90%+ character-similar
+    to the equal-length ending of the tail (both normalized), it's an echo — cut it."""
     if not page or not tail:
         return page
     def norm(s: str) -> str:
@@ -2117,11 +2118,17 @@ def _strip_tail_echo(page: str, tail: str) -> str:
     nt = norm(tail)
     if not nt:
         return page
+    from difflib import SequenceMatcher
     best = 0
-    for m in re.finditer(r"[.!?…]+[\s”\"')\]]*", page[:600]):
+    for m in re.finditer(r"[.!?…]+[\s”\"')\]]*", page[:700]):
         np = norm(page[:m.end()])
-        if len(np) >= 25 and nt.endswith(np):
-            best = m.end()
+        if len(np) < 25:                         # < ~5 words: too short to judge safely
+            continue
+        suffix = nt[-len(np):]                    # the echo aligns to the END of the tail
+        if not suffix:
+            continue
+        if nt.endswith(np) or SequenceMatcher(None, np, suffix).ratio() >= 0.90:
+            best = m.end()                        # keep extending: cut the LAST echoed sentence
     return page[best:].lstrip(" \n") if best else page
 
 
