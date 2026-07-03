@@ -72,7 +72,7 @@
       {#if dwell.session}
         <button class="gen-path" disabled={dwell.busy} onclick={() => dwell.generatePath()}
                 title="wander the vault and compose a fresh guided path (different every time)">
-          ✨ Generate a path
+          Generate a path
         </button>
       {/if}
 
