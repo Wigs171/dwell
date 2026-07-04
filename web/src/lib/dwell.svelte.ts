@@ -378,15 +378,19 @@ class DwellStore {
   // Page landed: if we spoke the opening early, queue (or speak) the remainder at
   // the right character offset. Diffusion may have revised the opening after we
   // started — accept the seam; the remainder follows the FINAL text.
-  private finishEarlyNarration(page: { key: number; text: string }) {
+  // Returns TRUE if early narration owns this page's audio → the caller must NOT also
+  // playCurrent() (that would re-read the whole page from the top — the jump-back bug).
+  private finishEarlyNarration(page: { key: number; text: string }): boolean {
     this.#stablePrev = ''; this.#stableCount = 0;
-    if (this.#earlyKey !== page.key) return;
+    if (this.#earlyKey !== page.key) return false;   // we never narrated this page early
     this.#earlyKey = null;
     const rem = page.text.slice(this.#earlyLen);
-    if (!rem.trim()) return;
-    const item = { key: page.key, text: rem, offset: this.#earlyLen };
-    if (this.narrator.isPlaying) this.#earlyRemainder = item;
-    else void this.narrator.speak(item.text, this.ttsVoice, this.ttsSpeed, item.offset);
+    if (rem.trim()) {
+      const item = { key: page.key, text: rem, offset: this.#earlyLen };
+      if (this.narrator.isPlaying) this.#earlyRemainder = item;
+      else void this.narrator.speak(item.text, this.ttsVoice, this.ttsSpeed, item.offset);
+    }
+    return true;                                       // early narration handled it
   }
 
   requestAdvance(opts: AdvanceOpts) {
@@ -1008,10 +1012,11 @@ class DwellStore {
           },
           frame: (p) => { if (idx >= 0) { this.applyText(this.pages[idx], p.text); this.maybeEarlyNarrate(this.pages[idx], p.text); } },
           done: (p) => {
+            let earlyOwned = false;
             if (idx >= 0) {
               const v = this.pages[idx];
               this.applyText(v, p.text); v.live = false; v.marker = p.marker;
-              this.finishEarlyNarration(v);
+              earlyOwned = this.finishEarlyNarration(v);
               v.mode = p.mode; v.node = p.node; v.title = p.title; v.sources = p.sources ?? [];
               v.images = p.images ?? []; v.layout = p.layout ?? null; v.form = p.form ?? v.form;
               v.textFigure = p.text_figure ?? null;
@@ -1024,7 +1029,10 @@ class DwellStore {
               ? `${p.path.title} · step ${p.path.gate}/${p.path.gates}${p.path.complete ? ' · complete ✓' : ''}`
               : `${p.mode} · ${p.recap || ''} — choose a direction below ↓`;
             this.setStatus(pmsg);
-            if (this.narrate) this.playCurrent();   // recliner: read the new page aloud
+            // read the new page aloud — UNLESS early narration already owns it (it read
+            // the opening and speaks the remainder itself; playCurrent would restart it
+            // from the top, jumping back to the beginning).
+            if (this.narrate && !earlyOwned) this.playCurrent();
           },
           path_done: (p) => {                        // walked past the last gate
             this.pathProgress = p;

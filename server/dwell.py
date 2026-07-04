@@ -646,6 +646,8 @@ class PagePlan:
     ghost: str = ""           # GHOST page: the unwritten link id this threshold renders (else "")
     canon: str = ""           # PATH page: the CANON SINK — established figures/elements, pinned (else "")
     avoid_openings: str = ""  # PATH page: recent page openings, to vary this one's entry (else "")
+    beat: str = ""            # PATH gate: this beat's DRAMATIC JOB in the story circle (else "")
+    waypoint: str = ""        # WAYPOINT tween: the intermediate node this frame passes through (else "")
 
     @property
     def material(self) -> str:
@@ -659,8 +661,8 @@ class PagePlan:
         raw = (f"{self.came_from}|{self.mode}|{self.node}|"
                f"{self.facet_start}|{self.take}|{self.steer_bucket}")
         if self.goal:         # a path frame — keep it distinct per goal (append-only, so
-            raw += f"|g2|{self.goal}"  # non-path keys are byte-for-byte unchanged; g2 = the
-            if self.arc:      # 2026-07-03 lean/pool rework, retiring earlier path pages)
+            raw += f"|g3|{self.goal}"  # non-path keys are byte-for-byte unchanged; g3 = the
+            if self.arc:      # 2026-07-03 beat-function rework, retiring earlier path pages)
                 raw += f"|{self.arc}"   # arc-aware forms: same node, different beat = new page
             if self.next_locked:        # a leaning close is a different page than an open one
                 raw += "|L"
@@ -668,6 +670,8 @@ class PagePlan:
             raw += f"|t{self.tween_t:.3f}"
         if self.ghost:        # each unwritten door is its own page (node alone won't do)
             raw += f"|gh|{self.ghost}"
+        if self.waypoint:     # each waypoint tween is its own page (node field stays the gate)
+            raw += f"|wp|{self.waypoint}"
         if self.canon:        # a page rendered under a different sink is a different page
             raw += "|c" + hashlib.sha1(self.canon.encode()).hexdigest()[:6]
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
@@ -1061,6 +1065,8 @@ class PathNavigator(Navigator):
         self._pool: list = []                   # tween material pool for the current corridor
         self._pool_key: tuple | None = None     # (a, b) the pool was built for
         self._tween_cursor = 0                  # sweep position within the pool
+        self._corridor_waypoints: set = set()   # waypoint nodes already visited this corridor
+        self._visited_waypoints: set = set()    # waypoints visited ANYWHERE on this path (no reruns)
         self._density_eff = self.tween_density  # per-corridor density (distance-aware)
         # CANON SINK (StreamDiffusion V2's sink tokens): established figures/elements,
         # first-seen order, pinned into every path page so the rolling tail/recap can't
@@ -1089,6 +1095,47 @@ class PathNavigator(Navigator):
             return node.title
         first = s.split(". ")[0]
         return (first if len(first) <= n else s[:n]).rstrip(" .")
+
+    def _beat_job(self, j: int) -> str:
+        """The gate's DRAMATIC FUNCTION — a compressed story circle (three-act /
+        hero's-journey shape) mapped onto however many gates the spine has. This is
+        what turns a path from one-problem-restated-N-times into a STORY: each beat
+        has a DIFFERENT job, the situation must change at every one, and introducing
+        the central problem is the job of exactly ONE page."""
+        n = len(self.spine)
+        if n <= 1:
+            return ""
+        t = j / (n - 1)
+        # Each job also carries an ATMOSPHERE clause (the Ocarina lesson: contrast is
+        # the meaning-maker — establish a home register, strain it, INVERT it at the
+        # turn, and let the resolution bring an early element back TRANSFORMED; the
+        # same place recontextualized is resonance, the same place repeated is noise).
+        if j == 0:
+            return ("ESTABLISH, THEN DISRUPT — sketch the standing world in a few "
+                    "strokes, then let the central problem ARRIVE, concretely, by this "
+                    "page's end. This is the ONLY page that may introduce the problem. "
+                    "Give this stretch of the world ONE distinct sensory register — its "
+                    "light, its sound, its weather — vivid enough to smell: this is the "
+                    "journey's HOME register.")
+        if t >= 1:
+            return ("RESOLVE AND GROW — the problem is ANSWERED here: show what was "
+                    "won, what it cost, and how the world or the understanding is now "
+                    "different. Growth — never another statement of the problem. Bring "
+                    "ONE element or image from the journey's opening BACK, transformed "
+                    "by what happened — the same thing, seen new.")
+        if t <= 0.4:
+            return ("FIRST ENGAGEMENT — act on the problem (it is already known; do "
+                    "not restate it). The attempt produces a RESULT this page makes "
+                    "real: a partial win, a cost, or an instructive failure. The home "
+                    "register strains at its edges.")
+        if t <= 0.7:
+            return ("THE TURN — a reversal or discovery CHANGES the problem's shape: "
+                    "an assumption breaks, a hidden layer shows, the goal moves. What "
+                    "is understood after this page is NEW — and the ATMOSPHERE turns "
+                    "with it: the same world, its light and sound changed.")
+        return ("THE COMMITMENT — the decisive step: pay the price, seize the key, "
+                "choose. By the end of this page the resolution has become POSSIBLE. "
+                "The register at its darkest and strangest here.")
 
     def _outline(self, cur_j: int | None) -> str:
         """The whole beat sheet as a compact numbered list, with the current beat and
@@ -1205,24 +1252,91 @@ class PathNavigator(Navigator):
                         self.rng.randrange(max(1, len(self._pool) // 2)), wild)
             self._pool_key = key
             self._tween_cursor = 0
+            self._corridor_waypoints = set()
             self._density_eff = self._corridor_density(a, b)
         return self._pool
 
+    def _pick_waypoint(self, a: str, b: str, k: int) -> str | None:
+        """A real vault node lying BETWEEN the gates in embedding space, nearest to the
+        interpolated point at this tween's position — the StreamDiffusion metaphor taken
+        literally: the corridor passes THROUGH intermediate keyframes instead of
+        re-blending the same two endpoints. Scale-invariant by construction: when
+        nothing genuinely lies between (every candidate is spine/visited/unrelated) it
+        returns None and the caller falls back to the endpoint blend — so a vault small
+        enough to warrant one tween simply gets the blend, with no special-casing."""
+        sp = self.brain.space
+        if sp is None:                           # no embedding space → can't interpolate
+            return None
+        t = k / self._density_eff
+        try:
+            v = sp.blend(sp.vec(a), sp.vec(b), t)
+        except Exception:
+            return None
+        used = set(self.spine) | self._corridor_waypoints | self._visited_waypoints
+        used.update((a, b, self.came_from or ""))
+        best, best_c = None, 0.2                 # floor: a waypoint must genuinely relate
+        for cid in self.brain.ids:
+            if cid in used:
+                continue
+            if self.history and self.history.seen_count(cid) > 2:
+                continue                          # over-familiar pages make stale waypoints
+            try:
+                c = sp.cos(v, sp.vec(cid))
+            except Exception:
+                continue
+            if c > best_c:
+                best_c, best = c, cid
+        return best
+
+    def _plan_tween_waypoint(self, a: str, b: str, wp: str, k: int) -> "PagePlan":
+        """A WAYPOINT tween: the corridor's mini-journey visits a NEW node en route —
+        its material is the frame's substance, framed as something encountered on the
+        way from `a` to `b`. headings = [a, waypoint, b] (the renderer reads the middle
+        entry); plan.node stays the departing gate, plan.waypoint carries the visit."""
+        node = self.brain.nodes[wp]
+        take, _heads, chunks = _assemble_page(node.facets(), 0, budget=PAGE_BUDGET // 2)
+        ta, tb, tw = (self.brain.nodes[a].title, self.brain.nodes[b].title, node.title)
+        t = round(k / (self._density_eff + 1), 3)
+        return PagePlan(
+            mode="bridge", node=a, title=f"{ta} → {tb}",
+            facet_start=0, take=take, headings=[ta, tw, tb],
+            chunks=[f"— en route from “{ta}” to “{tb}”, the way passes through "
+                    f"“{tw}” —", *chunks],
+            came_from=self.came_from, steer_bucket=self.steer_bucket(),
+            steer_text=self.steer_text, goal=self.goal, tween_t=t,
+            arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=False,
+            arc_outline=self._outline(self.i), canon="; ".join(self.canon),
+            avoid_openings=" / ".join(self.recent_openings), waypoint=wp)
+
+    def _next_corridor_plan(self) -> "PagePlan | None":
+        """The next TWEEN frame for the current corridor, or None when the run is spent.
+        Mid-run tweens are WAYPOINTS (new nodes, new ideas — a mini-journey of its own);
+        the FINAL tween is the arrival blend into the next gate's material. On vaults too
+        small for waypoints every tween falls back to the endpoint blend (fine there —
+        the run is short)."""
+        if not (self.confluence and self.i + 1 < len(self.spine)):
+            return None
+        nxt = self.spine[self.i + 1]
+        pool = self._tween_pool(self.current, nxt)       # also fixes _density_eff
+        if self._tween_k >= self._density_eff:
+            return None
+        k = self._tween_k + 1
+        if k < self._density_eff:                        # mid-run → visit somewhere new
+            wp = self._pick_waypoint(self.current, nxt, k)
+            if wp is not None:
+                return self._plan_tween_waypoint(self.current, nxt, wp, k)
+        if self._tween_cursor < len(pool):               # arrival (or waypointless fallback)
+            return self._plan_tween(self.current, nxt, self._tween_cursor, k)
+        return None
+
     def plan_auto(self) -> "PagePlan | None":
-        # After the KEYFRAME beat, run TWEEN frames toward the next gate — each a distinct,
-        # advancing slice of the corridor pool (this node's remainder + the next gate's
-        # material), so the run carries progressive motion instead of repetition. Capped by
-        # tween_density; then arrive at the next keyframe. Tweens dominate → the path FLOWS.
+        # After the KEYFRAME beat, run the corridor: waypoint tweens (a mini-journey
+        # through nodes BETWEEN the gates) then the arrival blend; then the next gate.
         if self.i + 1 < len(self.spine):
-            nxt = self.spine[self.i + 1]
-            if self.confluence and self._tween_k < self.tween_density + 1:
-                pool = self._tween_pool(self.current, nxt)
-                if self._tween_k >= self._density_eff:
-                    return self._plan_at("move", nxt, 0)
-                if self._tween_cursor < len(pool):
-                    return self._plan_tween(self.current, nxt,
-                                            self._tween_cursor, self._tween_k + 1)
-            return self._plan_at("move", nxt, 0)         # arrive at the next keyframe
+            p = self._next_corridor_plan()
+            if p is not None:
+                return p
+            return self._plan_at("move", self.spine[self.i + 1], 0)   # arrive at the gate
         # last keyframe: dwell any remaining facets (dwell_cap), else done
         if self.facet_cursor < len(self._facets) and self._dwelt < self.dwell_cap:
             return self._plan_at("dwell", self.current, self.facet_cursor)
@@ -1258,6 +1372,7 @@ class PathNavigator(Navigator):
         j = self._spine_index.get(node)
         if j is not None:                        # a gate (spine anchor)
             plan.arc = f"{j + 1} of {len(self.spine)}"
+            plan.beat = self._beat_job(j)        # its dramatic job in the story circle
             plan.toward = (self.brain.nodes[self.spine[j + 1]].title
                            if j + 1 < len(self.spine) else "")
         else:                                    # a corridor node (off-spine drift)
@@ -1316,10 +1431,7 @@ class PathNavigator(Navigator):
         UI renders '↻ Dwell here' / '→ {title}'."""
         nxt = self.spine[self.i + 1] if self.i + 1 < len(self.spine) else None
         if nxt is not None:
-            pool = self._tween_pool(self.current, nxt)
-            in_motion = (self.confluence and self._tween_k < self._density_eff
-                         and self._tween_cursor < len(pool))
-            if not in_motion:                   # the gate is next, and it is the only door
+            if self._next_corridor_plan() is None:   # the gate is next — the only door
                 return [(self._plan_at("move", nxt, 0), self.brain.nodes[nxt].title)]
         opts: list = []
         if self.facet_cursor < len(self._facets):
@@ -1360,9 +1472,15 @@ class PathNavigator(Navigator):
             return None
 
     def commit(self, plan: "PagePlan") -> None:
-        if plan.mode == "bridge":               # a TWEEN frame — consumed a slice of the pool
+        if plan.mode == "bridge":               # a TWEEN frame
             self._tween_k += 1
-            self._tween_cursor = plan.facet_start + plan.take  # advance → next tween is distinct
+            if plan.waypoint:                   # a waypoint visit — the pool is untouched
+                self._corridor_waypoints.add(plan.waypoint)
+                self._visited_waypoints.add(plan.waypoint)
+                if self.history:
+                    self.history.record_page(plan.waypoint, plan.take)
+            else:                               # endpoint blend — consumed a pool slice
+                self._tween_cursor = plan.facet_start + plan.take
             self.tick += 1
             if not self.trail or self.trail[-1] != plan.title:
                 self.trail.append(plan.title); self.trail = self.trail[-12:]
@@ -1974,10 +2092,11 @@ _FORM_PHASES = {
     "story": {
         "first": ("This beat OPENS the arc: establish the world of the story and set its "
                   "tension moving — the situation the whole journey exists to resolve."),
-        "middle": ("This beat DEVELOPS the arc: it is the NEXT CHAPTER of the same story — "
-                   "carry forward the figures, setting, and stakes already established "
-                   "(never a fresh vignette), and move events forward through complication "
-                   "and consequence."),
+        "middle": ("This beat is the NEXT CHAPTER of the same story: something HAPPENS — "
+                   "an attempt, a reversal, a discovery — that leaves the situation "
+                   "DIFFERENT from where the page began. Carry forward the established "
+                   "figures and stakes (never a fresh vignette), and never linger "
+                   "restating what is already at stake: events move."),
         "last": ("This beat LANDS the arc: the same story reaches its arrival — bring its "
                  "established line to resolution, and let the resolution, not a moral, "
                  "carry the journey's meaning."),
@@ -2329,7 +2448,17 @@ class Renderer:
             "move": (f"Glide into {plan.title} from what came just before, so the "
                      "shift feels inevitable rather than announced."),
             "bridge": (f"This is a TWEEN — a frame of MOTION between two beats, not a topic. "
-                       f"You are {_tween_pos}."),
+                       f"You are {_tween_pos}."
+                       + (f" This frame passes THROUGH “{plan.headings[1]}” — a real "
+                          f"waystation between the two beats. Its material below is NEW to "
+                          f"the journey: introduce what it brings as something ENCOUNTERED "
+                          f"en route — a fresh idea entering the story — then carry it "
+                          f"onward toward “{_tb}”."
+                          if len(plan.headings) == 3 else "")
+                       + " A tween is LIMINAL: where the two beats differ in atmosphere, "
+                         "let one register bleed into the other across this frame — the "
+                         "light, sound, or weather of what's ahead already arriving at "
+                         "the edges."),
             "ghost": (f"This page stands at an UNWRITTEN DOOR: “{plan.title}” is named "
                       f"throughout this work but has no page of its own — the material "
                       f"below is every glimpse of it that exists. Render the THRESHOLD: "
@@ -2388,17 +2517,21 @@ class Renderer:
             elif plan.toward:
                 # The gate WILL come, but maybe not next (the reader can drift) — so its
                 # pull may shape the close, but naming it as next would be a breakable
-                # promise (the original forward-lean failure).
-                close_line = (f"You are MID-JOURNEY: end with the goalward line of thought "
-                              f"still open — not wrapped up as a finished piece. The journey "
-                              f"bends toward “{plan.toward}” ahead: let that pull be felt in "
-                              f"how the close points, without naming it or promising it as "
-                              f"the next page (the reader may drift first).\n\n")
+                # promise. And the page must end MOVED-ON: closing on the same standing
+                # question every page is how a journey becomes one problem × N pages.
+                close_line = (f"You are MID-JOURNEY: end CHANGED — the situation at the "
+                              f"close must differ from this page's start, and the question "
+                              f"you leave open must be the NEW one this page raised, never "
+                              f"the journey's original problem restated. Don't wrap up as a "
+                              f"finished piece. The journey bends toward “{plan.toward}”: "
+                              f"let that pull be felt without naming it as the next page "
+                              f"(the reader may drift first).\n\n")
             else:
-                close_line = ("You are MID-JOURNEY: end with the goalward line of thought "
-                              "still open — not wrapped up as a finished piece, and not "
-                              "promising any specific next page (the reader chooses where "
-                              "to go).\n\n")
+                close_line = ("You are MID-JOURNEY: end CHANGED — the situation at the "
+                              "close must differ from this page's start, and the question "
+                              "left open must be the NEW one this page raised, never the "
+                              "journey's original problem restated. Not wrapped up as a "
+                              "finished piece; no specific next page promised.\n\n")
         else:
             close_line = ("Close on this page's own material — finish the thought and stop. "
                           "You don't know where the reader turns next, so lean nowhere.\n\n")
@@ -2410,22 +2543,28 @@ class Renderer:
             path_frame = (
                 f"GUIDED PATH{where} — one connected journey toward: {plan.goal}. Write this "
                 f"material as a step that ADVANCES that goal; embody it, never announce it.\n\n")
+            if plan.beat:
+                path_frame += (
+                    f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "
+                    f"not an essay on its theme — by the end of this page the situation "
+                    f"must be DIFFERENT from its start): {plan.beat}\n\n")
             if plan.canon:
                 path_frame += (
                     f"ESTABLISHED so far (keep these stable — reuse them; never invent "
-                    f"replacements for what already exists): {plan.canon}\n\n")
+                    f"replacements for what already exists): {plan.canon}\n"
+                    f"Everything above is ALREADY KNOWN to the reader: never re-introduce, "
+                    f"re-explain, or restate it — build on it and MOVE.\n\n")
             if plan.avoid_openings:
                 # Keep the cast/canon stable but VARY the entry — the recent pages all
                 # opened the same way (the pinned figure taking a physical action), which
                 # reads as the same idea repeated. Enter through a different door.
                 path_frame += (
                     f"RECENT PAGES OPENED WITH — do NOT open this one like any of these; the "
-                    f"first sentence must not reuse their opening figure, action, OR image/"
-                    f"object (if they opened on a lantern/brass/the water, yours must not): "
-                    f"«{plan.avoid_openings}». Enter from a genuinely different angle — a shift "
-                    f"in time or place, a sound or other sense, a line of speech, a wider view, "
-                    f"or a fresh object — THEN carry the thread on. Same story and cast, a "
-                    f"doorway you have not used yet.\n\n")
+                    f"first sentence must not reuse their opening figure, action, or central "
+                    f"image: «{plan.avoid_openings}». Enter from a genuinely different angle — a "
+                    f"shift in time or place, a sound or other sense, a line of speech, or a "
+                    f"wider view — THEN carry the thread on. Same story and cast, a doorway you "
+                    f"have not used yet.\n\n")
             # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
             # job; a tween is motion between beats and doesn't need the outline's weight.
             if plan.arc_outline and plan.mode != "bridge":
@@ -2449,11 +2588,12 @@ class Renderer:
             # word count lives in the persona's {n}, switched below — stated once.)
             task_line = (f"NOW: {instr} Render the felt movement between the two ideas — the "
                          f"transition itself, weighted to where you are, never a recap of "
-                         f"either node; paraphrase, {invent}. Flowing PARAGRAPHS of full "
-                         f"grammatical sentences (a tween is prose, never a stack of "
-                         f"one-line fragments). The horizon of this page is “{_tb}”: "
-                         f"approach it, never pass it — whatever lies beyond it belongs "
-                         f"to later pages.\n\n")
+                         f"either node; carry the CONSEQUENCE of what just happened forward "
+                         f"(events in motion — never the journey's standing problem restated); "
+                         f"paraphrase, {invent}. Flowing PARAGRAPHS of full grammatical "
+                         f"sentences (a tween is prose, never a stack of one-line fragments). "
+                         f"The horizon of this page is “{_tb}”: approach it, never pass it — "
+                         f"whatever lies beyond it belongs to later pages.\n\n")
         elif plan.mode == "ghost":
             task_line = (f"NOW: {instr} Draw ONLY on the mentions above — they are all "
                          f"that exists of this subject; paraphrase, {invent_page}.\n\n")

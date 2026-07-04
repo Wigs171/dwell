@@ -501,3 +501,21 @@ in-between frames). V2's live-streaming upgrades map onto our tested pain points
 5. **Narrate-while-diffusing** (← sub-0.5s time-to-first-frame). Start TTS once the
    opening of a refining page stabilizes across frames. Riskiest (diffusion revises
    early text); gated behind a stability check.
+
+### Beat functions — the dramatic spine (2026-07-03, from live listening)
+Paths repeated ONE problem for 12 pages (the sqrt-2 quandary; the ledger and the tide)
+because the prompts instructed it: every page was told to "end with the goalward line of
+thought still open" (= re-invoke the same tension), the story middle phase said "deepen
+what is at stake" (= wallow), and nothing required the situation to CHANGE. Fix: each
+gate now carries a DRAMATIC FUNCTION from a compressed story circle (three-act /
+hero's-journey shape) scaled to the spine length — ESTABLISH-THEN-DISRUPT (the ONLY page
+allowed to introduce the problem) → FIRST ENGAGEMENT (act on it, produce a RESULT) →
+THE TURN (the problem changes shape) → THE COMMITMENT (the key/price) → RESOLVE AND
+GROW. `PathNavigator._beat_job(j)` → `plan.beat` → a "THIS BEAT'S JOB" line on gates.
+Supporting rules: the ESTABLISHED sink is "already known — never re-explain, build on it
+and MOVE"; the mid-journey close now demands the page END CHANGED, leaving open the NEW
+question this page raised (never the original problem restated); tweens carry the
+CONSEQUENCE of what just happened. Form-neutral: for a tutorial the same circle reads as
+engage → misconception breaks → mastery. Verified live (Pythagoras story path):
+adjacent-page content overlap ~2%, every page ends on a different open question, events
+actually occur. Path cache re-keyed g2→g3.
