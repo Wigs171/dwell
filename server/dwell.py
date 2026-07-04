@@ -215,6 +215,7 @@ class Node:
     body: str
     sources: list[str]
     out_links: set[str] = field(default_factory=set)
+    kind: str = "concept"     # page type (entity/concept/synthesis) — entities are the CAST
 
     def facets(self) -> list[tuple[str, str]]:
         """Split the page body into dwellable facets (by ## sections)."""
@@ -442,6 +443,7 @@ class Brain:
             self.nodes[pid] = Node(
                 id=pid, title=page.title, summary=page.summary,
                 body=page.body, sources=list(page.sources or []),
+                kind=page.type.value,
             )
         if skipped and progress:
             progress(f"[{skipped} page(s) skipped; {len(self.nodes)} loaded]")
@@ -648,6 +650,7 @@ class PagePlan:
     avoid_openings: str = ""  # PATH page: recent page openings, to vary this one's entry (else "")
     beat: str = ""            # PATH gate: this beat's DRAMATIC JOB in the story circle (else "")
     waypoint: str = ""        # WAYPOINT tween: the intermediate node this frame passes through (else "")
+    telling: str = ""         # PATH page: the committed tense/person/cast contract (else "")
 
     @property
     def material(self) -> str:
@@ -1077,6 +1080,26 @@ class PathNavigator(Navigator):
         # gets opened on every page ("Maren did X" ×N), which reads as the same idea
         # repeated. We feed the last few openings back as a "don't enter like these" hint.
         self.recent_openings: list[str] = []
+        # THE TELLING — tense + person are chosen ONCE per path and held for the whole
+        # journey (a story that drifts between tenses reads as separate stories), and
+        # the CAST is drawn from the vault's real entity nodes so figures have names,
+        # can appear, and can SPEAK. Weighted so past/3rd dominates but present/1st and
+        # even 2nd/future runs exist — a replay axis for free. Narrative forms render
+        # this; expository forms ignore it (renderer gates by form).
+        tense = rng.choices(["past", "present", "future"], weights=[5, 4, 1])[0]
+        person = rng.choices(
+            ["third person", "first person", "second person"], weights=[5, 3, 2])[0]
+        ents = sorted((n for n in brain.nodes.values() if n.kind == "entity"),
+                      key=lambda n: -brain.centrality(n.id))
+        cast = ", ".join(n.title for n in ents[:6])
+        self.telling_line = (
+            f"THE TELLING (chosen for this journey — hold it on EVERY page): "
+            f"{tense} tense, {person} throughout."
+            + (f" CAST — the real figures of this world available to the story: {cast}. "
+               f"Let them appear, act, and SPEAK — direct dialogue in quoted lines "
+               f"wherever figures meet (how freely speech may be invented follows the "
+               f"creativity dial); a story with no voices is a summary."
+               if cast else ""))
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1306,7 +1329,8 @@ class PathNavigator(Navigator):
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=False,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
-            avoid_openings=" / ".join(self.recent_openings), waypoint=wp)
+            avoid_openings=" / ".join(self.recent_openings), waypoint=wp,
+            telling=self.telling_line)
 
     def _next_corridor_plan(self) -> "PagePlan | None":
         """The next TWEEN frame for the current corridor, or None when the run is spent.
@@ -1361,7 +1385,8 @@ class PathNavigator(Navigator):
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
-            avoid_openings=" / ".join(self.recent_openings))
+            avoid_openings=" / ".join(self.recent_openings),
+            telling=self.telling_line)
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1387,6 +1412,7 @@ class PathNavigator(Navigator):
                                                   or self.tween_density <= 0)
         plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
         plan.canon = "; ".join(self.canon)      # the sink rides every path page
+        plan.telling = self.telling_line        # the committed tense/person/cast
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
@@ -1820,8 +1846,10 @@ FORMS = {
         "story's WORLD contains: its facts are events, its ideas live inside figures, places, "
         "and happenings. When the material is abstract (an idea, a principle, a definition), "
         "dramatize it: a concrete instance, a moment where it is at stake, someone meeting it "
-        "head-on — the idea carried by the scene, not stated beside it. Continuous past-tense "
-        "prose, scene over summary. (This is the SHAPE only; how much you may invent beyond "
+        "head-on — the idea carried by the scene, not stated beside it. Continuous prose in "
+        "whatever tense and person the telling has established; scene over summary; let "
+        "people SPEAK in quoted lines where figures meet. (This is the SHAPE only; how much "
+        "you may invent beyond "
         "the material is set separately by the creativity dial — hold to it.)"
     ),
     "tutorial": (
@@ -1999,6 +2027,47 @@ _FORM_EXAMPLES = {
 # if the reader chose Q&A, a plain-prose tween in the middle would break it. So a tween speaks
 # the same form GRAMMAR, scaled down to one brief transition. Forms with no entry (article)
 # tween as plain flowing motion prose — the default, no form channel needed.
+# Each form's CONTRACT WITH THE MATERIAL — coverage is a per-form spectrum, not a
+# switch. An article surveys everything; a brief keeps only what moves the bottom
+# line; a story takes two ingredients and leaves the pantry full. The contract rides
+# the task line (the binding, recency-weighted spot). `article` (absent here) keeps
+# the full touch-everything-in-order survey built inline with the page's headings.
+# Forms that render THE TELLING (a path's committed tense/person/cast). Expository
+# forms ignore it — an article has no business in second-person future.
+_TELLING_FORMS = ("story", "case", "epistolary")
+
+_FORM_COVERAGE = {
+    "guided": ("Cover the material's ideas, but re-sequence them for LEARNING — the "
+               "order that builds understanding, not the document's order — and trim "
+               "what the lesson doesn't need."),
+    "qa": ("Cover what a curious reader would actually ASK — every likely question "
+           "answered; material nobody would ask about may drop."),
+    "dialogue": ("Take the CONTESTABLE material — the claims worth defending and "
+                 "attacking; leave the uncontroversial inventory out."),
+    "story": ("The material is a PANTRY, not a checklist: take ONLY the one or two "
+              "elements that serve this page, render them fully as lived narrative, "
+              "and leave the rest unused — you do not need every aspect of the "
+              "material; depth comes from omission. Never tour the material section "
+              "by section. If the moment completes early, end early — a story page "
+              "ends when its moment ends, not at a word count."),
+    "tutorial": ("Take what serves the SKILL — the moves the reader will actually do "
+                 "and just enough context to do them; background that doesn't change "
+                 "what they do gets trimmed."),
+    "brief": ("Take ONLY what changes the bottom line — the decision-relevant facts; "
+              "everything else drops, however interesting."),
+    "case": ("Take what the CASE turns on — the facts in play at its decision points; "
+             "the rest of the material stays on the shelf."),
+    "interview": ("Take what's TELLABLE — the concrete, the surprising, the stakes a "
+                  "host would draw out; skip what wouldn't survive conversation."),
+    "debate": ("Take only the genuinely DISPUTED material — what the two positions "
+               "actually clash over; agreed background gets a sentence at most."),
+    "epistolary": ("Take what these correspondents would genuinely WRITE each other "
+                   "about — what presses on them personally; the rest goes "
+                   "unmentioned."),
+    "chronicle": ("Take what HAPPENED — the datable events, in time order; analysis "
+                  "with no moment in time drops."),
+}
+
 _FORM_TWEEN = {
     "guided": (
         "as ONE or TWO connective paragraphs of flowing prose that carry the idea forward — "
@@ -2364,13 +2433,14 @@ class Renderer:
         self.form_shape = _FORM_SHAPE.get(self.form) or _ARTICLE_SHAPE  # short cue → persona
         self.form_example = _FORM_EXAMPLES.get(self.form, "")           # slot-only skeleton
         self.form_phases = _FORM_PHASES.get(self.form, {})              # arc-aware beats (paths)
-        # Cache id hashes the directive+skeleton+phases (parity with voice_id) so editing a
-        # form's wording busts stale caches; default 'article' stays bare so old caches hold.
+        self.form_coverage = _FORM_COVERAGE.get(self.form, "")          # material contract
+        # Cache id hashes directive+skeleton+phases+coverage (parity with voice_id) so
+        # editing a form's wording busts stale caches; default 'article' stays bare.
         _phase_text = "".join(v for _, v in sorted(self.form_phases.items()))
         self.form_id = "article" if self.form == DEFAULT_FORM else (
             "f-" + self.form + "-" + hashlib.sha1(
-                (self.form_directive + self.form_example + _phase_text)
-                .encode()).hexdigest()[:6])
+                (self.form_directive + self.form_example + _phase_text
+                 + self.form_coverage).encode()).hexdigest()[:6])
 
     def set_language(self, language: str) -> None:
         """Switch the output LANGUAGE — the page's medium, orthogonal to voice/form/level.
@@ -2413,6 +2483,8 @@ class Renderer:
             parts.append(self.language_id)
         if self.dream > 0:
             parts.append(self.dream_id)
+        if plan.telling and self.form in _TELLING_FORMS:
+            parts.append("tl-" + hashlib.sha1(plan.telling.encode()).hexdigest()[:6])
         parts.append(plan.key())
         return ":".join(parts)
 
@@ -2453,7 +2525,9 @@ class Renderer:
                           f"waystation between the two beats. Its material below is NEW to "
                           f"the journey: introduce what it brings as something ENCOUNTERED "
                           f"en route — a fresh idea entering the story — then carry it "
-                          f"onward toward “{_tb}”."
+                          f"onward toward “{_tb}”. The SAME continuing journey arrives here "
+                          f"carrying everything so far: the waystation enters the story; "
+                          f"the story does not restart at the waystation."
                           if len(plan.headings) == 3 else "")
                        + " A tween is LIMINAL: where the two beats differ in atmosphere, "
                          "let one register bleed into the other across this frame — the "
@@ -2542,7 +2616,12 @@ class Renderer:
             where = f" (beat {plan.arc})" if plan.arc else ""
             path_frame = (
                 f"GUIDED PATH{where} — one connected journey toward: {plan.goal}. Write this "
-                f"material as a step that ADVANCES that goal; embody it, never announce it.\n\n")
+                f"material as a step that ADVANCES that goal; embody it, never announce it. "
+                f"The whole path is ONE continuous experience: this page is the NEXT MOMENT "
+                f"of the same unfolding whole — never a self-contained piece, never a scene "
+                f"reset.\n\n")
+            if plan.telling and self.form in _TELLING_FORMS:
+                path_frame += plan.telling + "\n\n"
             if plan.beat:
                 path_frame += (
                     f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "
@@ -2555,16 +2634,18 @@ class Renderer:
                     f"Everything above is ALREADY KNOWN to the reader: never re-introduce, "
                     f"re-explain, or restate it — build on it and MOVE.\n\n")
             if plan.avoid_openings:
-                # Keep the cast/canon stable but VARY the entry — the recent pages all
-                # opened the same way (the pinned figure taking a physical action), which
-                # reads as the same idea repeated. Enter through a different door.
+                # Two failure poles: identical openings (monotony) and fresh-scene
+                # openings (disconnection — every page reads as a new story). The rule
+                # that avoids both: CONTINUE the scene-flow, vary only the LENS.
                 path_frame += (
-                    f"RECENT PAGES OPENED WITH — do NOT open this one like any of these; the "
-                    f"first sentence must not reuse their opening figure, action, or central "
-                    f"image: «{plan.avoid_openings}». Enter from a genuinely different angle — a "
-                    f"shift in time or place, a sound or other sense, a line of speech, or a "
-                    f"wider view — THEN carry the thread on. Same story and cast, a doorway you "
-                    f"have not used yet.\n\n")
+                    f"RECENT PAGES OPENED WITH (vary the LENS, never the SCENE): "
+                    f"«{plan.avoid_openings}». Don't reuse those first moves — but do NOT "
+                    f"escape them by jumping to a new time, place, or cast either: that "
+                    f"reads as a new story starting. This page begins INSIDE the moment "
+                    f"the previous page left off in (or its direct aftermath), picked up "
+                    f"mid-flow through a DIFFERENT lens — another sense, another element "
+                    f"already present in the scene, a reaction, a closer or wider look at "
+                    f"what is already happening.\n\n")
             # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
             # job; a tween is motion between beats and doesn't need the outline's weight.
             if plan.arc_outline and plan.mode != "bridge":
@@ -2597,7 +2678,12 @@ class Renderer:
         elif plan.mode == "ghost":
             task_line = (f"NOW: {instr} Draw ONLY on the mentions above — they are all "
                          f"that exists of this subject; paraphrase, {invent_page}.\n\n")
+        elif self.form_coverage:
+            # The form's contract with the material (coverage is a per-form spectrum).
+            task_line = (f"NOW: {instr} {self.form_coverage} "
+                         f"Paraphrase rather than quote, {invent_page}.\n\n")
         else:
+            # article — the full survey: touch everything, in the material's order
             task_line = (f"NOW: {instr} Retell the material above, touching in order on "
                          f"[{guide}]; paraphrase rather than quote, {invent_page}.\n\n")
         # CREATIVITY (dream) directive — placed late (recency) so it can license invention
