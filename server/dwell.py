@@ -1092,14 +1092,9 @@ class PathNavigator(Navigator):
         ents = sorted((n for n in brain.nodes.values() if n.kind == "entity"),
                       key=lambda n: -brain.centrality(n.id))
         cast = ", ".join(n.title for n in ents[:6])
-        self.telling_line = (
-            f"THE TELLING (chosen for this journey — hold it on EVERY page): "
-            f"{tense} tense, {person} throughout."
-            + (f" CAST — the real figures of this world available to the story: {cast}. "
-               f"Let them appear, act, and SPEAK — direct dialogue in quoted lines "
-               f"wherever figures meet (how freely speech may be invented follows the "
-               f"creativity dial); a story with no voices is a summary."
-               if cast else ""))
+        # machine format — "tense|person|cast"; the RENDERER clamps to the active
+        # form's legal space (_FORM_TELLING) and writes the human line
+        self.telling_line = f"{tense}|{person}|{cast}"
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -2032,9 +2027,26 @@ _FORM_EXAMPLES = {
 # line; a story takes two ingredients and leaves the pantry full. The contract rides
 # the task line (the binding, recency-weighted spot). `article` (absent here) keeps
 # the full touch-everything-in-order survey built inline with the page's headings.
-# Forms that render THE TELLING (a path's committed tense/person/cast). Expository
-# forms ignore it — an article has no business in second-person future.
-_TELLING_FORMS = ("story", "case", "epistolary")
+# Forms that render THE TELLING (a path's committed tense/person/cast), each with
+# its LEGAL space. The path rolls once; every form CLAMPS the roll to what its
+# genre grammar allows (first legal value wins on a clash), so one journey keeps
+# one telling while no form is forced into a register that isn't a thing:
+#   story — fully free (past/present/future x 3rd/1st/2nd are all live traditions)
+#   case  — past-3rd ("the team chose"), present-2nd simulation ("you are the
+#           analyst"), or practitioner memoir — but never future tense
+#   epistolary — FIRST person by nature (a 3rd-person letter isn't a letter);
+#           tense unspecified — letters naturally mix recounting/feeling/fearing
+# Expository forms (tutorial=2nd-present, guided/qa/brief, spoken forms, chronicle=
+# past annals) have their tense fixed by the form itself and ignore the telling.
+_FORM_TELLING = {
+    "story":      {"tenses": ("past", "present", "future"),
+                   "persons": ("third person", "first person", "second person")},
+    "case":       {"tenses": ("past", "present"),
+                   "persons": ("third person", "second person", "first person")},
+    "epistolary": {"tenses": (),
+                   "persons": ("first person",)},
+}
+_TELLING_FORMS = tuple(_FORM_TELLING)
 
 _FORM_COVERAGE = {
     "guided": ("Cover the material's ideas, but re-sequence them for LEARNING — the "
@@ -2621,7 +2633,27 @@ class Renderer:
                 f"of the same unfolding whole — never a self-contained piece, never a scene "
                 f"reset.\n\n")
             if plan.telling and self.form in _TELLING_FORMS:
-                path_frame += plan.telling + "\n\n"
+                _tn, _pn, _cast = (plan.telling.split("|", 2) + ["", ""])[:3]
+                spec = _FORM_TELLING[self.form]
+                if spec["tenses"] and _tn not in spec["tenses"]:
+                    _tn = spec["tenses"][0]      # clamp: e.g. a future-tense case → past
+                if spec["persons"] and _pn not in spec["persons"]:
+                    _pn = spec["persons"][0]     # clamp: e.g. a 3rd-person letter → 1st
+                held = [f"{_tn} tense"] if spec["tenses"] else []
+                if spec["persons"]:
+                    held.append(_pn)
+                tl = ""
+                if held:
+                    tl = ("THE TELLING (chosen for this journey — hold it on EVERY "
+                          "page): " + ", ".join(held) + " throughout.")
+                if _cast:
+                    tl += (" CAST — the real figures of this world: " + _cast + ". "
+                           "Let them appear, act, and speak in their own words — "
+                           "quoted lines wherever figures meet (how freely speech may "
+                           "be invented follows the creativity dial); a story with no "
+                           "voices is a summary.")
+                if tl:
+                    path_frame += tl + "\n\n"
             if plan.beat:
                 path_frame += (
                     f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "
