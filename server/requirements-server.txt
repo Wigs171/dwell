@@ -10,3 +10,5 @@ sse-starlette>=2.2
 #   sentence-transformers   # embeddings (all-MiniLM-L6-v2); TF-IDF stdlib fallback
 #   numpy
 # Optional audio narration (dwell_tts.py): kokoro-onnx, sounddevice
+# Optional cloud narration voices (dwell_tts_cloud.py — clone/design/preset
+# voices via fal.ai, bring-your-own key): fal-client

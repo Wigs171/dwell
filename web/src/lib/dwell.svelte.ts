@@ -538,6 +538,22 @@ class DwellStore {
   }
   async clearMercuryKey() { try { await api.clearMercuryKey(); this.mercuryHasKey = false; } catch { /* ignore */ } }
 
+  // Narration (fal.ai) key — cloud TTS voices. Server holds the key; client only
+  // knows whether one is set. Refreshes the narrator voice list after a change.
+  ttsHasKey = $state(false);
+  async loadTtsKey() { try { this.ttsHasKey = (await api.ttsKey()).has_key; } catch { /* ignore */ } }
+  async setTtsKey(key: string) {
+    try { this.ttsHasKey = (await api.setTtsKey(key)).has_key; await this.reloadNarratorVoices(); }
+    catch (e) { this.setStatus('Save narration key failed: ' + msg(e), true); }
+  }
+  async clearTtsKey() { try { await api.clearTtsKey(); this.ttsHasKey = false; await this.reloadNarratorVoices(); } catch { /* ignore */ } }
+  /** Re-fetch the narrator voice list (cloud voices appear/vanish with the key). */
+  async reloadNarratorVoices() {
+    await this.narrator.init();
+    this.ttsAvailable = this.narrator.available;
+    this.ttsVoices = this.narrator.voices.length ? this.narrator.voices : [this.narrator.defaultVoice];
+  }
+
   // Web search provider (Tavily / Brave) — powers research-prompt builds.
   searchProvider = $state('');
   searchHasKey = $state(false);
@@ -901,6 +917,7 @@ class DwellStore {
     this.loadLearnSettings();
     void this.loadEndpoints();
     void this.loadMercuryKey();
+    void this.loadTtsKey();
     void this.loadSearch();
     this.quizzesOn = ls.get('dwell-quizzes') !== '0';
     this.quizEvery = Math.max(2, Math.min(20, num(ls.get('dwell-quiz-every'), 5)));

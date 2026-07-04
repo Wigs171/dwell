@@ -179,6 +179,18 @@ export const api = {
     if (!r.ok) throw new Error(await detail(r));
     return r.json() as Promise<{ has_key: boolean }>;
   },
+  // Narration (fal.ai) key — cloud TTS voices, its own spot in Settings → Read.
+  ttsKey: () => jget<{ has_key: boolean }>('/reader/tts-key'),
+  setTtsKey: async (api_key: string) => {
+    const r = await fetch('/reader/tts-key', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key }) });
+    if (!r.ok) throw new Error(await detail(r));
+    return r.json() as Promise<{ has_key: boolean }>;
+  },
+  clearTtsKey: async () => {
+    const r = await fetch('/reader/tts-key', { method: 'DELETE' });
+    if (!r.ok) throw new Error(await detail(r));
+    return r.json() as Promise<{ has_key: boolean }>;
+  },
   // Web search provider — powers research-prompt builds.
   searchConfig: () => jget<{ provider: string; has_key: boolean; providers: string[]; available: boolean }>('/search'),
   setSearch: async (provider: string, api_key: string) => {

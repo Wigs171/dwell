@@ -81,6 +81,15 @@ from dwell_tts import (  # noqa: E402 — audio narration (Kokoro, server-side)
     web_tts_available, synth_wavs, list_web_voices,
     DEFAULT_NARRATOR_VOICE, NARRATOR_VOICES,
 )
+try:                                       # cloud narration voices (fal.ai Qwen3-TTS)
+    from dwell_tts_cloud import (  # noqa: E402 — clone/design voice library
+        CLOUD_PREFIX, cloud_tts_available, list_cloud_voices, enroll_clone,
+        enroll_design, delete_voice as delete_cloud_voice, preview_clip,
+        synth_cloud_wavs, cloud_models_public, clone_engines_public,
+    )
+    _CLOUD_TTS = True
+except Exception:                          # noqa: BLE001 — optional feature
+    _CLOUD_TTS = False
 from text_figures import choose_text_figure, DEFAULT_DENSITY  # noqa: E402 — derived text-figures
 from compendium.vault import read_page  # noqa: E402 — resolve source ids → titles
 from compendium.vault.pages import locate_page  # noqa: E402 — find a node's file (for image frontmatter)
@@ -1205,6 +1214,28 @@ def _path_block(s: DwellSession) -> dict:
     return base
 
 
+def _ensure_path_plot(s: DwellSession) -> None:
+    """THE PLOT / THROUGH-LINE — one planning call per path, ANY form: a premise +
+    one turn per gate, decided before the first page renders, so every journey has
+    somewhere to GO (narrative forms enact the turns; expository forms arrive at
+    them). Lazy + idempotent (the /form hook re-fires it harmlessly). Dry mode and
+    failures leave the path plotless (beat-function-only pages, the old behavior)."""
+    nav = s.nav
+    if not isinstance(nav, PathNavigator) or nav.plot_premise or s.renderer.dry:
+        return
+
+    def _complete(sysmsg: str, usr: str) -> str:
+        text, in_tok, out_tok = s.renderer._complete(sysmsg, usr, diffusing=False)
+        try:
+            s.renderer.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                                model=s.renderer.model, is_sub_call=True)
+        except Exception:
+            pass
+        return text
+
+    nav.ensure_plot(_complete)                  # swallows its own failures
+
+
 def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
     """Blocking page production, run on a worker thread. Mirrors the tkinter
     _beat_worker: resolve the plan, commit, predict the next page (to lean this one
@@ -1243,6 +1274,7 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
             s.path = {"id": pdata.get("id"), "title": pdata.get("title") or pdata.get("id"),
                       "goal": pdata.get("goal") or "", "gates": len(resolved),
                       "missing": missing}
+            _ensure_path_plot(s)                # narrative form → decide the story now
         else:
             seed = req.seed if (req.seed and req.seed in s.brain.nodes) else None
             s.nav = Navigator(s.brain, seed, s.wander, s.rng, s.history, start=req.start)
@@ -1586,6 +1618,7 @@ class FormReq(BaseModel):
 def set_form(req: FormReq) -> dict:
     s = _require_session(req.session)
     s.renderer.set_form(req.name)    # any key of dwell.FORMS; unknown → article
+    _ensure_path_plot(s)             # switched a running path into a narrative form
     return {"ok": True, "form": s.renderer.form}
 
 
@@ -1742,12 +1775,23 @@ def timeline(session: str, min_conf: float = 0.7) -> dict:
 
 
 # ---- audio narration (Kokoro, server-side; streamed to the browser) --------
+def _cloud_state() -> tuple[bool, str, list[str]]:
+    """(available, error, voice ids) — enrolled voices are listed only when the
+    cloud lane can actually speak them (key + client present)."""
+    if not _CLOUD_TTS:
+        return False, "dwell_tts_cloud not importable", []
+    ok, err = cloud_tts_available()
+    return ok, err, (list_cloud_voices() if ok else [])
+
+
 @app.get("/tts/voices")
 def tts_voices() -> dict:
     ok, err = web_tts_available()
-    return {"available": ok, "error": err or None,
-            "voices": (list_web_voices() if ok else list(NARRATOR_VOICES)),
-            "default": DEFAULT_NARRATOR_VOICE}
+    cloud_ok, cloud_err, cloud = _cloud_state()
+    return {"available": ok or cloud_ok, "error": err or None,
+            "voices": cloud + (list_web_voices() if ok else list(NARRATOR_VOICES)),
+            "default": DEFAULT_NARRATOR_VOICE,
+            "cloud": {"available": cloud_ok, "error": cloud_err or None}}
 
 
 class TtsReq(BaseModel):
@@ -1759,16 +1803,24 @@ class TtsReq(BaseModel):
 
 @app.post("/tts")
 async def tts(req: TtsReq):
-    """Synthesize `text` with Kokoro and stream it sentence-by-sentence as base64
-    WAV clips, so the browser can start playing within ~1s and stitch them
-    gaplessly. The model loads on the first call (~1s) on a worker thread."""
-    ok, err = web_tts_available()
+    """Synthesize `text` sentence-by-sentence as base64 audio clips, so the
+    browser starts playing fast and stitches them gaplessly. Kokoro voices
+    stream in ~1s (local); `cloud:` voices route to the fal.ai studio lane —
+    sentences fan out concurrently there, but first audio still takes ~15-20s
+    (decodeAudioData on the client is format-agnostic, so WAV/mp3 both fine)."""
+    voice = req.voice or DEFAULT_NARRATOR_VOICE
+    is_cloud = _CLOUD_TTS and voice.startswith(CLOUD_PREFIX)
+    if is_cloud:
+        ok, err = cloud_tts_available()
+    else:
+        ok, err = web_tts_available()
     if not ok:
         raise HTTPException(status_code=503, detail=f"TTS unavailable: {err}")
     loop = asyncio.get_running_loop()
+    synth = synth_cloud_wavs if is_cloud else synth_wavs
 
     def produce(emit) -> None:
-        for sentence, wav in synth_wavs(req.text, req.voice or DEFAULT_NARRATOR_VOICE, req.speed):
+        for sentence, wav in synth(req.text, voice, req.speed):
             emit("clip", {"text": sentence, "b64": base64.b64encode(wav).decode("ascii")})
 
     async def gen():
@@ -1776,6 +1828,83 @@ async def tts(req: TtsReq):
             yield _sse_event(kind, payload)
 
     return EventSourceResponse(gen())
+
+
+# ---- the voice library (clone / design — the fal.ai studio lane) ------------
+def _require_cloud() -> None:
+    if not _CLOUD_TTS:
+        raise HTTPException(status_code=503, detail="cloud voices module unavailable")
+    ok, err = cloud_tts_available()
+    if not ok:
+        raise HTTPException(status_code=503, detail=f"cloud voices unavailable: {err}")
+
+
+@app.get("/tts/library")
+def voices_list() -> dict:
+    cloud_ok, cloud_err, _ids = _cloud_state()
+    detail = list_cloud_voices(detailed=True) if _CLOUD_TTS else []
+    return {"available": cloud_ok, "error": cloud_err or None, "voices": detail,
+            "models": (cloud_models_public() if _CLOUD_TTS else []),
+            "clone_engines": (clone_engines_public() if _CLOUD_TTS else [])}
+
+
+@app.post("/tts/library/clone")
+async def voices_clone(name: str = Form(...), transcript: str = Form(""),
+                       consent: str = Form(""), engine: str = Form("qwen"),
+                       exaggeration: float = Form(0.5),
+                       audio: UploadFile = File(...)) -> dict:
+    """One-time enrollment from a recording or an uploaded clip. The consent
+    box is REQUIRED — clone only your own voice or one you have permission to
+    use; the sample goes to fal.ai once. `engine` picks the clone backend
+    (qwen = natural embedding; chatterbox = cheapest, the clip itself is reused)."""
+    _require_cloud()
+    if consent not in ("true", "1", "on", "yes"):
+        raise HTTPException(status_code=400, detail="consent checkbox is required")
+    data = await audio.read()
+    if len(data) < 20_000:
+        raise HTTPException(status_code=400, detail="sample too short — record ~10 seconds")
+    ext = (audio.filename or "sample.wav").rsplit(".", 1)[-1]
+    try:
+        meta = await run_in_threadpool(enroll_clone, name, data, ext, transcript,
+                                       engine, exaggeration)
+    except Exception as exc:               # noqa: BLE001 — surface fal errors readably
+        raise HTTPException(status_code=502, detail=f"enrollment failed: {exc}") from exc
+    return {"ok": True, "voice": meta}
+
+
+class DesignReq(BaseModel):
+    name: str
+    description: str
+    base_voice: str = ""
+
+
+@app.post("/tts/library/design")
+def voices_design(req: DesignReq) -> dict:
+    _require_cloud()
+    if not req.description.strip():
+        raise HTTPException(status_code=400, detail="a voice description is required")
+    return {"ok": True, "voice": enroll_design(req.name, req.description, req.base_voice)}
+
+
+class PreviewReq(BaseModel):
+    voice: str
+
+
+@app.post("/tts/library/preview")
+async def voices_preview(req: PreviewReq) -> dict:
+    """One fixed sentence in this voice (~15-20s round trip) as a base64 clip."""
+    _require_cloud()
+    clip = await run_in_threadpool(preview_clip, req.voice)
+    if clip is None:
+        raise HTTPException(status_code=502, detail="preview synthesis failed")
+    return {"ok": True, "b64": base64.b64encode(clip).decode("ascii")}
+
+
+@app.delete("/tts/library/{slug}")
+def voices_delete(slug: str) -> dict:
+    if not _CLOUD_TTS or not delete_cloud_voice(slug):
+        raise HTTPException(status_code=404, detail=f"no voice '{slug}'")
+    return {"ok": True}
 
 
 @app.exception_handler(HTTPException)

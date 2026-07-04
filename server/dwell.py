@@ -652,6 +652,9 @@ class PagePlan:
     waypoint: str = ""        # WAYPOINT tween: the intermediate node this frame passes through (else "")
     telling: str = ""         # PATH page: the committed tense/person/cast contract (else "")
     correspondents: str = ""  # EPISTOLARY path: the two named letter-writers + who they are (else "")
+    plot: str = ""            # PATH page (narrative forms): the journey's decided PREMISE (else "")
+    plot_event: str = ""      # PATH gate: the ONE event this page must make happen (else "")
+    plot_done: str = ""       # PATH page: events already landed — consequences persist (else "")
 
     @property
     def material(self) -> str:
@@ -1090,8 +1093,32 @@ class PathNavigator(Navigator):
         tense = rng.choices(["past", "present", "future"], weights=[5, 4, 1])[0]
         person = rng.choices(
             ["third person", "first person", "second person"], weights=[5, 3, 2])[0]
-        ents = sorted((n for n in brain.nodes.values() if n.kind == "entity"),
-                      key=lambda n: -brain.centrality(n.id))
+        # The cast is SPINE-LOCAL, not vault-global: an entity that IS a gate leads
+        # (in spine order), then entities nearest the spine's center of mass. On a
+        # small vault this reduces to the old centrality ranking (everything is
+        # near everything); on a 188-entity vault it stops the six most famous
+        # strangers from being cast in a journey they never appear in.
+        ents = [n for n in brain.nodes.values() if n.kind == "entity"]
+        _sp = brain.space
+        _cen = None
+        if _sp is not None and spine:
+            try:                                # running mean via blend → centroid
+                _cen = _sp.vec(spine[0])
+                for _k, _nid in enumerate(spine[1:], start=2):
+                    _cen = _sp.blend(_cen, _sp.vec(_nid), 1.0 / _k)
+            except Exception:
+                _cen = None
+
+        def _affinity(n) -> float:
+            if n.id in self._spine_index:
+                return 3.0 - self._spine_index[n.id] * 0.01
+            if _cen is not None:
+                try:
+                    return _sp.cos(_cen, _sp.vec(n.id))
+                except Exception:
+                    pass
+            return brain.centrality(n.id) * 0.001
+        ents.sort(key=lambda n: -_affinity(n))
         cast = ", ".join(n.title for n in ents[:6])
         # machine format — "tense|person|cast"; the RENDERER clamps to the active
         # form's legal space (_FORM_TELLING) and writes the human line
@@ -1100,6 +1127,15 @@ class PathNavigator(Navigator):
         # whole path — the letters are BETWEEN them, about each node as it's reached.
         # Prefer person-like entities (a place can't write a letter) over raw centrality.
         self.correspondents_line = self._pick_correspondents(ents)
+        # THE PLOT — filled by ensure_plot() (ONE planning call at path start, narrative
+        # forms only): a premise (who wants what, what opposes them, the stakes) and one
+        # concrete EVENT per gate, causally chained. This is what the beat functions
+        # cannot supply alone: they give each page a dramatic SHAPE, but nothing ever
+        # decided the dramatic CONTENT — so renders defaulted to describing characters
+        # in ambient motion. Empty (expository forms / dry runs / failed call) = every
+        # page falls back to beat-function-only behavior, exactly as before.
+        self.plot_premise: str = ""
+        self.plot_events: list[str] = []
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1298,7 +1334,9 @@ class PathNavigator(Navigator):
             if self._PERSONISH.search(n.summary or ""):
                 s += 2
             return s
-        ranked = sorted(ents, key=lambda n: (-personish(n), -self.brain.centrality(n.id)))
+        # stable sort: within a personish tier the caller's order survives — and the
+        # caller now passes SPINE-LOCAL order, so letter-writers belong to the journey
+        ranked = sorted(ents, key=lambda n: -personish(n))
         picked = ranked[:2]
         if not picked:
             return ""
@@ -1306,6 +1344,103 @@ class PathNavigator(Navigator):
             first = " ".join((n.summary or "").split()).split(". ")[0].rstrip(" .")
             return first[:120] if first else n.title
         return "; ".join(f"{n.title} — {who(n)}" for n in picked)
+
+    # -- THE PLOT: one planning call decides the whole through-line -----------
+    _PLOT_SECTIONS = re.compile(
+        r"relationship|story hook|conflict|history|open question|limitation"
+        r"|key claim|criticis|controvers|benchmark|significance|why\b", re.I)
+
+    def _gate_brief(self, node_id: str, cap: int = 420) -> str:
+        """One gate's PLOT-RELEVANT material for the planning call: its summary plus
+        its tension-bearing sections — where a lore page keeps its feuds and stakes
+        (relationships, story hooks) and a technical page keeps its friction
+        (limitations, open questions, key claims, benchmarks). The ingest already
+        writes the tension down; this is where it becomes a through-line."""
+        node = self.brain.nodes.get(node_id)
+        if node is None:
+            return ""
+        parts = [" ".join((node.summary or "").split())]
+        for h, m in node.facets():
+            if self._PLOT_SECTIONS.search(h or ""):
+                parts.append(" ".join(m.split()))
+        return " ".join(p for p in parts if p)[:cap]
+
+    def plot_brief(self) -> tuple[str, str]:
+        """(sysmsg, usr) for THE PLOT planning call — the one moment the journey's
+        through-line is decided (plan-then-write: an outline chosen up front,
+        because a per-page renderer provably cannot hold one it never saw). The
+        premise is deliberately WIDE — a drive and a counter-pressure, which are
+        people when the material has people and otherwise ideas, methods, limits
+        or anomalies (the history-of-ideas story: the method works until the
+        anomaly breaks it) — so a technical vault plans as honestly as a lore
+        vault. Rules sit LAST."""
+        cast = (self.telling_line.split("|", 2) + ["", "", ""])[2]
+        gates = "\n".join(f"{k + 1}. {self.brain.nodes[nid].title} — "
+                          f"{self._gate_brief(nid)}"
+                          for k, nid in enumerate(self.spine))
+        sysmsg = ("You plan the through-line of a serialized journey told through "
+                  "the pages of a knowledge vault. Reply in EXACTLY this format, "
+                  "nothing else:\n"
+                  "PREMISE: <one sentence — a DRIVE (someone or something wants, "
+                  "asks, or attempts), the COUNTER-PRESSURE that resists it, and "
+                  "what hangs on the outcome>\n"
+                  "1. <turn>\n2. <turn>\n"
+                  "(one numbered line per chapter, same count as the chapters given)")
+        usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
+               + (f"Figures available: {cast}\n" if cast else "")
+               + "\nThe chapters, in order, each with its page's material:\n"
+               + gates
+               + "\n\nWrite the PREMISE and one TURN per chapter. A turn is "
+                 "something GIVING WAY — a discovery made, an attempt failing or "
+                 "succeeding, an assumption breaking, a question sharpening, a "
+                 "price paid, a resolution reached — never a topic, never a "
+                 "description. The drive and the counter-pressure may be people; "
+                 "when the material has none they are just as well ideas, methods, "
+                 "limits or anomalies — use whatever the material genuinely "
+                 "offers, and name only what it names. Chain the turns: each "
+                 "caused by the one before, making the next possible. Chapter k's "
+                 "turn must be stageable with chapter k's material. The final "
+                 "turn resolves the premise. Each line under 25 words.")
+        return sysmsg, usr
+
+    def adopt_plot(self, text: str) -> bool:
+        """Parse the planning reply into premise + per-gate events. Tolerant: stray
+        prose is ignored; missing tail events leave those gates event-free (they
+        still carry the premise). Returns False — and the path stays plotless —
+        when no usable premise arrives."""
+        if not text:
+            return False
+        premise = ""
+        events = [""] * len(self.spine)
+        for line in text.splitlines():
+            line = line.strip()
+            m = re.match(r"(?i)premise\s*:\s*(.+)", line)
+            if m:
+                premise = m.group(1).strip()
+                continue
+            m = re.match(r"(\d+)[.)]\s+(.+)", line)
+            if m:
+                k = int(m.group(1)) - 1
+                if 0 <= k < len(events):
+                    events[k] = m.group(2).strip()
+        if not premise or not any(events):
+            return False
+        self.plot_premise = premise
+        self.plot_events = events
+        return True
+
+    def ensure_plot(self, complete) -> bool:
+        """Generate THE PLOT once, via `complete(sysmsg, usr) -> str` (the caller
+        wraps its own LLM client — the navigator stays client-free). Idempotent;
+        any failure leaves the path plotless and pages fall back to
+        beat-function-only behavior."""
+        if self.plot_premise or len(self.spine) < 2:
+            return bool(self.plot_premise)
+        try:
+            sysmsg, usr = self.plot_brief()
+            return self.adopt_plot(complete(sysmsg, usr) or "")
+        except Exception:
+            return False
 
     def _pick_waypoint(self, a: str, b: str, k: int) -> str | None:
         """A real vault node lying BETWEEN the gates in embedding space, nearest to the
@@ -1358,7 +1493,10 @@ class PathNavigator(Navigator):
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=False,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings), waypoint=wp,
-            telling=self.telling_line, correspondents=self.correspondents_line)
+            telling=self.telling_line, correspondents=self.correspondents_line,
+            plot=self.plot_premise,             # tweens: premise + landed events only —
+            plot_done="; ".join(                # the NEXT event is the gate's to spring
+                e for e in self.plot_events[:self.i + 1] if e))
 
     def _next_corridor_plan(self) -> "PagePlan | None":
         """The next TWEEN frame for the current corridor, or None when the run is spent.
@@ -1414,7 +1552,10 @@ class PathNavigator(Navigator):
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings),
-            telling=self.telling_line, correspondents=self.correspondents_line)
+            telling=self.telling_line, correspondents=self.correspondents_line,
+            plot=self.plot_premise,             # tweens: premise + landed events only —
+            plot_done="; ".join(                # the NEXT event is the gate's to spring
+                e for e in self.plot_events[:self.i + 1] if e))
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1443,6 +1584,12 @@ class PathNavigator(Navigator):
         plan.telling = self.telling_line        # the committed tense/person/cast
         plan.correspondents = self.correspondents_line   # epistolary letter-writers
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
+        if self.plot_premise:                   # THE PLOT rides every path page:
+            plan.plot = self.plot_premise       # premise everywhere; the gate's own
+            _done = j if j is not None else self.i + 1   # event only ON the gate
+            plan.plot_done = "; ".join(e for e in self.plot_events[:_done] if e)
+            if j is not None and j < len(self.plot_events):
+                plan.plot_event = self.plot_events[j]
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
         # node once between them, and the arrival never re-reads tween material.
@@ -2087,6 +2234,12 @@ _TELLING_FORMS = tuple(_FORM_TELLING)
 # NOT here: it is the abstract Socratic method by design ("not the historical figure").
 _CAST_FORMS = ("story", "case", "epistolary", "interview", "debate")
 
+# EVERY path form renders the planned through-line (plan.plot*) — an outline
+# helps an article as much as a story. These NARRATIVE forms render it ENACTED
+# (events staged in scene); every other form treats it as an argument's
+# through-line (turns arrived at, not performed).
+_PLOT_ENACTED = ("story", "case", "epistolary")
+
 
 def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
     """Cast the path's leading vault entities into a form's people-roles. `leads_str`
@@ -2578,6 +2731,9 @@ class Renderer:
             parts.append("tl-" + hashlib.sha1(plan.telling.encode()).hexdigest()[:6])
         if plan.correspondents and self.form in _CAST_FORMS:
             parts.append("co-" + hashlib.sha1(plan.correspondents.encode()).hexdigest()[:6])
+        if plan.plot:
+            _pl = f"{plan.plot}|{plan.plot_event}|{plan.plot_done}"
+            parts.append("pl-" + hashlib.sha1(_pl.encode()).hexdigest()[:6])
         parts.append(plan.key())
         return ":".join(parts)
 
@@ -2732,6 +2888,49 @@ class Renderer:
                 _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
                 if _cb:
                     path_frame += _cb + "\n\n"
+            # THE PLOT / THE THROUGH-LINE — the journey's decided course. The beat
+            # (below) gives this page its dramatic SHAPE; the planned turn gives it
+            # its CONTENT — without one, a renderer left to invent development
+            # page-by-page defaults to none. Narrative forms ENACT the turns in
+            # scene; every other form ARRIVES at them through the material.
+            if plan.plot and self.form in _PLOT_ENACTED:
+                path_frame += (f"THE PLOT (decided for this whole journey — every "
+                               f"page serves it, no page announces it): "
+                               f"{plan.plot}\n")
+                if plan.plot_done:
+                    path_frame += (f"ALREADY HAPPENED: {plan.plot_done}. Done and "
+                                   f"standing — consequences persist; never rerun "
+                                   f"or undo these.\n")
+                if plan.plot_event:
+                    path_frame += (f"THIS PAGE'S EVENT — it takes place ON this "
+                                   f"page, enacted in scene through the material "
+                                   f"below, never summarized or deferred: "
+                                   f"{plan.plot_event}\n")
+                elif plan.mode == "bridge":
+                    path_frame += ("BETWEEN EVENTS: this frame is travel and "
+                                   "consequence — the last event's aftermath "
+                                   "drives the motion; the next event belongs to "
+                                   "the coming gate, not here.\n")
+                path_frame += "\n"
+            elif plan.plot:
+                path_frame += (f"THE THROUGH-LINE (planned for this whole journey "
+                               f"— every page advances it, no page announces it): "
+                               f"{plan.plot}\n")
+                if plan.plot_done:
+                    path_frame += (f"ALREADY ESTABLISHED: {plan.plot_done}. "
+                                   f"Settled — build on these; never re-derive or "
+                                   f"restate them.\n")
+                if plan.plot_event:
+                    path_frame += (f"THIS PAGE'S TURN — the development this page "
+                                   f"arrives at, earned through the material "
+                                   f"below, never merely announced: "
+                                   f"{plan.plot_event}\n")
+                elif plan.mode == "bridge":
+                    path_frame += ("BETWEEN TURNS: consolidate and carry — let "
+                                   "the last turn's consequences work on this "
+                                   "material; the next turn belongs to the "
+                                   "coming gate, not here.\n")
+                path_frame += "\n"
             if plan.beat:
                 path_frame += (
                     f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "

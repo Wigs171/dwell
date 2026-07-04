@@ -204,6 +204,43 @@ def clear_mercury() -> dict:
     return {"has_key": False}
 
 
+# ---- narration (fal.ai) key — cloud TTS voices, its own spot in Settings → Read ------
+# The studio-lane TTS (clone/design/preset voices) runs on fal.ai; this holds its key.
+# Stored locally, never leaves the server; the TTS lane falls back to FALAI_API_KEY in .env.
+_TTS_STORE = VAULT_ROOT / ".dwell-tts.json"
+
+
+def read_tts_key() -> str:
+    """The user-set fal.ai key (empty if none) — the TTS lane falls back to .env."""
+    try:
+        return (json.loads(_TTS_STORE.read_text(encoding="utf-8")).get("api_key") or "").strip()
+    except Exception:
+        return ""
+
+
+@reader_router.get("/tts-key")
+def get_tts_key() -> dict:
+    return {"has_key": bool(read_tts_key())}
+
+
+@reader_router.put("/tts-key")
+def set_tts_key(req: MercuryKeyIn) -> dict:      # reuses the {api_key} model
+    VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+    tmp = _TTS_STORE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"api_key": (req.api_key or "").strip()}), encoding="utf-8")
+    os.replace(tmp, _TTS_STORE)
+    return {"has_key": bool(read_tts_key())}
+
+
+@reader_router.delete("/tts-key")
+def clear_tts_key() -> dict:
+    try:
+        _TTS_STORE.unlink()
+    except FileNotFoundError:
+        pass
+    return {"has_key": False}
+
+
 # ---- web search provider — powers research-prompt builds (cli.py loop) ----------------
 # Tavily or Brave + key. Stored locally; the key never leaves the server. Falls back to
 # COMPENDIUM_SEARCH_PROVIDER / _API_KEY in .env when unset.

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dwell, QUIZ_TYPE_KEYS, READING_LEVELS, OUTPUT_FORMS, LANGUAGES } from './dwell.svelte';
   import { THEMES, BG_PATTERNS, themeByName, type Theme } from './themes';
+  import VoiceLibrary from './VoiceLibrary.svelte';
 
   const QUIZ_TYPE_LABELS: Record<string, string> = {
     choice: 'Multiple choice', truefalse: 'True / false', cloze: 'Fill in the blank',
@@ -240,12 +241,13 @@
           <label class="chk"><input type="checkbox" checked={dwell.narrate} onchange={() => dwell.toggleNarrate()} /> 🔊 read pages aloud</label>
           <div class="color-row"><label for="tv">Voice</label>
             <select id="tv" value={dwell.ttsVoice} onchange={(e) => dwell.setTtsVoice(e.currentTarget.value)} disabled={!dwell.ttsAvailable}>
-              {#each dwell.ttsVoices as v}<option value={v}>{v}</option>{/each}
+              {#each dwell.ttsVoices as v}<option value={v}>{v.startsWith('cloud:') ? '☁ ' + v.slice(6) : v}</option>{/each}
             </select></div>
           <div class="color-row"><label for="tsp">Speed</label>
             <input id="tsp" type="range" min="0.7" max="1.5" step="0.05" value={dwell.ttsSpeed} oninput={(e) => dwell.setTtsSpeed(+e.currentTarget.value)} /></div>
           <div class="color-row"><label for="tvol">Volume</label>
             <input id="tvol" type="range" min="0" max="1" step="0.05" value={dwell.ttsVolume} oninput={(e) => dwell.setTtsVolume(+e.currentTarget.value)} /></div>
+          <VoiceLibrary />
         </div>
 
         <div class="card">
