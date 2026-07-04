@@ -1137,9 +1137,9 @@ class PathNavigator(Navigator):
             return ("ESTABLISH, THEN DISRUPT — sketch the standing world in a few "
                     "strokes, then let the central problem ARRIVE, concretely, by this "
                     "page's end. This is the ONLY page that may introduce the problem. "
-                    "Give this stretch of the world ONE distinct sensory register — its "
-                    "light, its sound, its weather — vivid enough to smell: this is the "
-                    "journey's HOME register.")
+                    "Give the world ONE distinct sensory register — vivid enough to "
+                    "smell — and know it is painted ONCE, here: later pages INHERIT it "
+                    "and never repaint it.")
         if t >= 1:
             return ("RESOLVE AND GROW — the problem is ANSWERED here: show what was "
                     "won, what it cost, and how the world or the understanding is now "
@@ -1149,16 +1149,14 @@ class PathNavigator(Navigator):
         if t <= 0.4:
             return ("FIRST ENGAGEMENT — act on the problem (it is already known; do "
                     "not restate it). The attempt produces a RESULT this page makes "
-                    "real: a partial win, a cost, or an instructive failure. The home "
-                    "register strains at its edges.")
+                    "real: a partial win, a cost, or an instructive failure.")
         if t <= 0.7:
             return ("THE TURN — a reversal or discovery CHANGES the problem's shape: "
                     "an assumption breaks, a hidden layer shows, the goal moves. What "
                     "is understood after this page is NEW — and the ATMOSPHERE turns "
                     "with it: the same world, its light and sound changed.")
         return ("THE COMMITMENT — the decisive step: pay the price, seize the key, "
-                "choose. By the end of this page the resolution has become POSSIBLE. "
-                "The register at its darkest and strangest here.")
+                "choose. By the end of this page the resolution has become POSSIBLE.")
 
     def _outline(self, cur_j: int | None) -> str:
         """The whole beat sheet as a compact numbered list, with the current beat and
@@ -1219,8 +1217,10 @@ class PathNavigator(Navigator):
                 self.canon = [c for c in self.canon if not (c != r and c in r)]
                 self.canon.append(r)
         self.canon = self.canon[:10]
-        # capture this page's opening (first ~14 words) for the anti-monotony hint
-        opening = " ".join(text.split()[:14]).strip()
+        # capture only the opening's DOORWAY GRAMMAR (first 4 words — "You felt
+        # the…"), not its content: quoting objects back into the prompt keeps them
+        # hot (priming) and re-seeds the very motif the list exists to rotate out
+        opening = " ".join(text.split()[:4]).strip()
         if opening:
             self.recent_openings.append(opening)
             self.recent_openings = self.recent_openings[-3:]
@@ -1582,7 +1582,7 @@ Write ONE page — about {n} words, {shape} Open mid-stride, carrying straight o
 came just before without repeating any of it; develop the material; land the close on this \
 page's own terms. Spoken prose, written for the ear. Light markup only, and sparingly: \
 **bold** for a truly key term, *italics* for a work's title or gentle stress, an occasional \
-"## " heading where the form suits it (an article or guided tour — never dialogue or Q&A); \
+"## " heading where the form suits it (an article or guided tour — never dialogue, Q&A, or a story); \
 plain line breaks between beats or turns are fine. No lists, links, tables, blockquotes, \
 or code."""
 
@@ -2622,10 +2622,8 @@ class Renderer:
                           f"carrying everything so far: the waystation enters the story; "
                           f"the story does not restart at the waystation."
                           if len(plan.headings) == 3 else "")
-                       + " A tween is LIMINAL: where the two beats differ in atmosphere, "
-                         "let one register bleed into the other across this frame — the "
-                         "light, sound, or weather of what's ahead already arriving at "
-                         "the edges."),
+                       + " The register is already set — continue INSIDE it; only a "
+                         "genuine shift in the next beat may reach this frame's edges."),
             "ghost": (f"This page stands at an UNWRITTEN DOOR: “{plan.title}” is named "
                       f"throughout this work but has no page of its own — the material "
                       f"below is every glimpse of it that exists. Render the THRESHOLD: "
@@ -2746,18 +2744,33 @@ class Renderer:
                     f"Everything above is ALREADY KNOWN to the reader: never re-introduce, "
                     f"re-explain, or restate it — build on it and MOVE.\n\n")
             if plan.avoid_openings:
-                # Two failure poles: identical openings (monotony) and fresh-scene
-                # openings (disconnection — every page reads as a new story). The rule
-                # that avoids both: CONTINUE the scene-flow, vary only the LENS.
-                path_frame += (
-                    f"RECENT PAGES OPENED WITH (vary the LENS, never the SCENE): "
-                    f"«{plan.avoid_openings}». Don't reuse those first moves — but do NOT "
-                    f"escape them by jumping to a new time, place, or cast either: that "
-                    f"reads as a new story starting. This page begins INSIDE the moment "
-                    f"the previous page left off in (or its direct aftermath), picked up "
-                    f"mid-flow through a DIFFERENT lens — another sense, another element "
-                    f"already present in the scene, a reaction, a closer or wider look at "
-                    f"what is already happening.\n\n")
+                # Most pages don't need an OPENING at all — just a transition: in a
+                # book, page breaks are invisible and the text simply continues. An
+                # entry exists only at real boundaries (the establish page, the turn,
+                # the resolution); everywhere else the first sentence is the NEXT
+                # sentence of the ongoing text.
+                _boundary = plan.mode == "open" or (plan.beat and (
+                    plan.beat.startswith("ESTABLISH")
+                    or plan.beat.startswith("THE TURN")
+                    or plan.beat.startswith("RESOLVE")))
+                if _boundary:
+                    path_frame += (
+                        f"RECENT PAGES BEGAN: «{plan.avoid_openings}». This beat earns a "
+                        f"real entrance — and the doorways are MANY: mid-action, a line "
+                        f"of speech, a thought or a question, someone arriving or "
+                        f"leaving, an object at work, a change just noticed, a memory "
+                        f"surfacing, a decision being made, a sound or a smell, the "
+                        f"light if it just changed, a closer or wider view. Any entry "
+                        f"works so long as it continues the journey — just not a "
+                        f"doorway used lately.\n\n")
+                else:
+                    path_frame += (
+                        f"NO OPENING — this page is a TRANSITION: its first sentence is "
+                        f"simply the NEXT sentence of the text above, as if the page "
+                        f"break did not exist. No entrance, no re-orientation, no "
+                        f"scene-setting — pick up mid-flow and keep going. (Recent "
+                        f"pages began: «{plan.avoid_openings}» — begin unlike these, "
+                        f"which is to say: don't begin at all, continue.)\n\n")
             # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
             # job; a tween is motion between beats and doesn't need the outline's weight.
             if plan.arc_outline and plan.mode != "bridge":
