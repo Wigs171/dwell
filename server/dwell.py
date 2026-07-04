@@ -651,6 +651,7 @@ class PagePlan:
     beat: str = ""            # PATH gate: this beat's DRAMATIC JOB in the story circle (else "")
     waypoint: str = ""        # WAYPOINT tween: the intermediate node this frame passes through (else "")
     telling: str = ""         # PATH page: the committed tense/person/cast contract (else "")
+    correspondents: str = ""  # EPISTOLARY path: the two named letter-writers + who they are (else "")
 
     @property
     def material(self) -> str:
@@ -1095,6 +1096,10 @@ class PathNavigator(Navigator):
         # machine format — "tense|person|cast"; the RENDERER clamps to the active
         # form's legal space (_FORM_TELLING) and writes the human line
         self.telling_line = f"{tense}|{person}|{cast}"
+        # EPISTOLARY: two named vault entities become the correspondents, held for the
+        # whole path — the letters are BETWEEN them, about each node as it's reached.
+        # Prefer person-like entities (a place can't write a letter) over raw centrality.
+        self.correspondents_line = self._pick_correspondents(ents)
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1274,6 +1279,34 @@ class PathNavigator(Navigator):
             self._density_eff = self._corridor_density(a, b)
         return self._pool
 
+    _PERSONISH = re.compile(r"\b(he|she|they|him|her|his|hers|their|who|whom|born|"
+                            r"master|apprentice|leader|scholar|philosopher|teacher|"
+                            r"student|keeper|smuggler|priest|king|queen|founder|"
+                            r"woman|man|figure|person)\b", re.I)
+
+    def _pick_correspondents(self, ents: list) -> str:
+        """Two named entities to write the letters — person-like ones preferred over
+        places/works (a lighthouse can't correspond), scored by personal-language cues
+        + centrality. Returns "Name1 — who they are; Name2 — who they are" (each 'who'
+        the entity's summary first sentence) so the renderer can put them in character,
+        or "" when the vault has fewer than two entities."""
+        def personish(n) -> int:
+            s = 0
+            t = n.title
+            if " " in t and not t.lower().startswith(("the ", "a ", "an ")):
+                s += 2                            # "Maren Vote" reads as a person
+            if self._PERSONISH.search(n.summary or ""):
+                s += 2
+            return s
+        ranked = sorted(ents, key=lambda n: (-personish(n), -self.brain.centrality(n.id)))
+        picked = ranked[:2]
+        if not picked:
+            return ""
+        def who(n) -> str:
+            first = " ".join((n.summary or "").split()).split(". ")[0].rstrip(" .")
+            return first[:120] if first else n.title
+        return "; ".join(f"{n.title} — {who(n)}" for n in picked)
+
     def _pick_waypoint(self, a: str, b: str, k: int) -> str | None:
         """A real vault node lying BETWEEN the gates in embedding space, nearest to the
         interpolated point at this tween's position — the StreamDiffusion metaphor taken
@@ -1325,7 +1358,7 @@ class PathNavigator(Navigator):
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=False,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings), waypoint=wp,
-            telling=self.telling_line)
+            telling=self.telling_line, correspondents=self.correspondents_line)
 
     def _next_corridor_plan(self) -> "PagePlan | None":
         """The next TWEEN frame for the current corridor, or None when the run is spent.
@@ -1381,7 +1414,7 @@ class PathNavigator(Navigator):
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings),
-            telling=self.telling_line)
+            telling=self.telling_line, correspondents=self.correspondents_line)
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1408,6 +1441,7 @@ class PathNavigator(Navigator):
         plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
         plan.canon = "; ".join(self.canon)      # the sink rides every path page
         plan.telling = self.telling_line        # the committed tense/person/cast
+        plan.correspondents = self.correspondents_line   # epistolary letter-writers
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
@@ -1895,13 +1929,13 @@ FORMS = {
         "no labels."
     ),
     "epistolary": (
-        "as LETTERS — an exchange between two unnamed correspondents who know each other well "
-        "and write with the intimacy of long acquaintance. Two or three letters per page: the "
+        "as LETTERS — an exchange between two correspondents who know each other well and "
+        "write with the intimacy of long acquaintance. Two or three letters per page: the "
         "first writes of the matter at hand — news, worry, argument, wonder, grounded in the "
         "material — and the next replies, answering what was actually said and adding its own. "
-        "First person throughout, each letter opening with a plain epistolary line (\"My "
-        "friend —\") and closing simply. The material arrives as lived correspondence: what "
-        "the writer saw, heard, fears, hopes — never a lecture folded into a letter."
+        "First person throughout; each letter opens by addressing the other correspondent BY "
+        "NAME and closes so its writer is clear. The material arrives as lived correspondence: "
+        "what the writer saw, heard, fears, hopes — never a lecture folded into a letter."
     ),
     "chronicle": (
         "as a CHRONICLE — the material told as happenings in the order they occurred, in the "
@@ -2000,11 +2034,11 @@ _FORM_EXAMPLES = {
         "  — [either: where it truly stands — what each would need to concede]"
     ),
     "epistolary": (
-        "Shape to follow — EMPTY SLOTS: two unnamed correspondents, fill with THIS page's "
-        "material; never print the bracketed cues:\n"
-        "  [letter — opens plainly (\"My friend —\"), writes of the matter as lived news or "
-        "worry, ends reaching toward the other]\n"
-        "  [reply — answers what was actually said, adds its own seeing, closes simply]"
+        "Shape to follow — EMPTY SLOTS: two correspondents, fill with THIS page's material; "
+        "never print the bracketed cues:\n"
+        "  [letter — opens by NAMING the other correspondent, writes of the matter as lived "
+        "news or worry, ends reaching toward the other]\n"
+        "  [reply — names the first back, answers what was actually said, adds its own seeing]"
     ),
     "chronicle": (
         "Shape to follow — EMPTY SLOTS, prose entries separated by line breaks, earliest "
@@ -2047,6 +2081,51 @@ _FORM_TELLING = {
                    "persons": ("first person",)},
 }
 _TELLING_FORMS = tuple(_FORM_TELLING)
+
+# Forms with unnamed PEOPLE-ROLES that a path fills with real vault entities (the
+# path's "leads" — 1-2 person-like entity nodes, chosen once and held). dialogue is
+# NOT here: it is the abstract Socratic method by design ("not the historical figure").
+_CAST_FORMS = ("story", "case", "epistolary", "interview", "debate")
+
+
+def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
+    """Cast the path's leading vault entities into a form's people-roles. `leads_str`
+    is "Name — who; Name — who" (1-2 leads, each 'who' from the entity's summary)."""
+    leads = [l.strip() for l in leads_str.split(";") if l.strip()]
+    if not leads:
+        return ""
+    names = [l.split(" — ")[0].strip() for l in leads]
+    if form == "epistolary":
+        if len(leads) < 2:
+            return ""
+        return ("These letters are written BETWEEN two real figures of this world — "
+                + "; ".join(leads) + " — each writing IN CHARACTER (their own knowledge, "
+                "stake, and voice) to the other, about the matter of the material below. "
+                "Address each letter to the other BY NAME (never a generic 'My friend —') "
+                "and make its writer clear; what each says, notices, and fears is shaped "
+                "by WHO THEY ARE and what this subject means to them.")
+    if form == "debate":
+        if len(leads) < 2:
+            return ""
+        return ("The two sides are held by real figures of this world who genuinely "
+                "differ — " + "; ".join(leads) + ". Each argues IN CHARACTER, by name, "
+                "from their own knowledge and stake; the clash is between THESE people's "
+                "readings of the material, not abstract unnamed positions.")
+    if form == "interview":
+        return ("The KNOWLEDGEABLE VOICE is a real figure of this world: " + leads[0]
+                + ". The unnamed host interviews THEM specifically; every answer comes in "
+                + names[0] + "'s own voice, knowledge, and stake — not a neutral narrator.")
+    if form == "story":
+        b = ("POINT OF VIEW — the vantage this story follows is " + leads[0]
+             + "; hold this viewpoint across the journey.")
+        if cast_full:
+            b += (" Other real figures of this world may appear and SPEAK in quoted "
+                  "lines: " + cast_full + " — a story with no voices is a summary.")
+        return b
+    if form == "case":
+        return ("This case is lived by real figures of this world — " + "; ".join(leads)
+                + " — who act and decide in character, by name; not anonymous actors.")
+    return ""
 
 _FORM_COVERAGE = {
     "guided": ("Cover the material's ideas, but re-sequence them for LEARNING — the "
@@ -2497,6 +2576,8 @@ class Renderer:
             parts.append(self.dream_id)
         if plan.telling and self.form in _TELLING_FORMS:
             parts.append("tl-" + hashlib.sha1(plan.telling.encode()).hexdigest()[:6])
+        if plan.correspondents and self.form in _CAST_FORMS:
+            parts.append("co-" + hashlib.sha1(plan.correspondents.encode()).hexdigest()[:6])
         parts.append(plan.key())
         return ":".join(parts)
 
@@ -2642,18 +2723,17 @@ class Renderer:
                 held = [f"{_tn} tense"] if spec["tenses"] else []
                 if spec["persons"]:
                     held.append(_pn)
-                tl = ""
                 if held:
-                    tl = ("THE TELLING (chosen for this journey — hold it on EVERY "
-                          "page): " + ", ".join(held) + " throughout.")
-                if _cast:
-                    tl += (" CAST — the real figures of this world: " + _cast + ". "
-                           "Let them appear, act, and speak in their own words — "
-                           "quoted lines wherever figures meet (how freely speech may "
-                           "be invented follows the creativity dial); a story with no "
-                           "voices is a summary.")
-                if tl:
-                    path_frame += tl + "\n\n"
+                    path_frame += ("THE TELLING (chosen for this journey — hold it on "
+                                   "EVERY page): " + ", ".join(held) + " throughout.\n\n")
+            # CAST — fill the form's people-roles with the path's leading vault entities,
+            # independent of the telling (interview/debate are present-tense but still
+            # want named figures). plan.telling's 3rd field carries the full cast list.
+            if plan.correspondents and self.form in _CAST_FORMS:
+                _cast_full = (plan.telling.split("|", 2) + ["", "", ""])[2]
+                _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
+                if _cb:
+                    path_frame += _cb + "\n\n"
             if plan.beat:
                 path_frame += (
                     f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "
