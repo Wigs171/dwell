@@ -655,6 +655,8 @@ class PagePlan:
     plot: str = ""            # PATH page (narrative forms): the journey's decided PREMISE (else "")
     plot_event: str = ""      # PATH gate: the ONE event this page must make happen (else "")
     plot_done: str = ""       # PATH page: events already landed — consequences persist (else "")
+    plot_cost: str = ""       # PATH gate: the lasting PRICE this gate's event exacts (else "")
+    plot_state: str = ""      # PATH page: standing consequences of landed events (else "")
 
     @property
     def material(self) -> str:
@@ -1137,6 +1139,7 @@ class PathNavigator(Navigator):
         # page falls back to beat-function-only behavior, exactly as before.
         self.plot_premise: str = ""
         self.plot_events: list[str] = []
+        self.plot_costs: list[str] = []   # per-gate PRICES — lasting marks that persist
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1397,7 +1400,8 @@ class PathNavigator(Navigator):
                   "PREMISE: <one sentence — a DRIVE (someone or something wants, "
                   "asks, or attempts), the COUNTER-PRESSURE that resists it, and "
                   "what hangs on the outcome>\n"
-                  "1. <turn>\n2. <turn>\n"
+                  "1. <turn> || price: <the lasting change it leaves>\n"
+                  "2. <turn> || price: <the lasting change it leaves>\n"
                   "(one numbered line per chapter, same count as the chapters given)")
         usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
                + (f"Figures available: {cast}\n" if cast else "")
@@ -1407,24 +1411,34 @@ class PathNavigator(Navigator):
                  "something GIVING WAY — a discovery made, an attempt failing or "
                  "succeeding, an assumption breaking, a question sharpening, a "
                  "price paid, a resolution reached — never a topic, never a "
-                 "description. The drive and the counter-pressure may be people; "
-                 "when the material has none they are just as well ideas, methods, "
-                 "limits or anomalies — use whatever the material genuinely "
-                 "offers, and name only what it names. Chain the turns: each "
-                 "caused by the one before, making the next possible. Chapter k's "
-                 "turn must be stageable with chapter k's material. The final "
-                 "turn resolves the premise. Each line under 25 words.")
+                 "description. Each turn's PRICE is the lasting mark it leaves on "
+                 "a named figure or the world, drawn from what this material "
+                 "genuinely puts at stake. Prices PERSIST: every later chapter "
+                 "lives with them, and the best next turns grow out of them — a "
+                 "figure who has lost something must go on another way. A turn "
+                 "that costs something lasting beats a turn that merely reveals; "
+                 "let the counter-pressure land real blows, not only resist. The "
+                 "drive and the counter-pressure may be people; when the material "
+                 "has none they are just as well ideas, methods, limits or "
+                 "anomalies — use whatever the material genuinely offers, and "
+                 "name only what it names. Chain the turns: each caused by the "
+                 "one before, making the next possible. Chapter k's turn must be "
+                 "stageable with chapter k's material. The final turn resolves "
+                 "the premise. Each line under 35 words including its price.")
         return sysmsg, usr
 
     def adopt_plot(self, text: str) -> bool:
-        """Parse the planning reply into premise + per-gate events. Tolerant: stray
-        prose is ignored; missing tail events leave those gates event-free (they
-        still carry the premise). Returns False — and the path stays plotless —
-        when no usable premise arrives."""
+        """Parse the planning reply into premise + per-gate events + per-gate
+        PRICES (the lasting change each turn leaves — carried forward as standing
+        state so later pages deal with the fallout). Tolerant: stray prose is
+        ignored; a line without '|| price:' just has no cost; missing tail events
+        leave those gates event-free. Returns False — and the path stays
+        plotless — when no usable premise arrives."""
         if not text:
             return False
         premise = ""
         events = [""] * len(self.spine)
+        costs = [""] * len(self.spine)
         for line in text.splitlines():
             line = line.strip()
             m = re.match(r"(?i)premise\s*:\s*(.+)", line)
@@ -1435,11 +1449,17 @@ class PathNavigator(Navigator):
             if m:
                 k = int(m.group(1)) - 1
                 if 0 <= k < len(events):
-                    events[k] = m.group(2).strip()
+                    body = m.group(2).strip()
+                    parts = re.split(r"\s*\|\|\s*price\s*:\s*", body, maxsplit=1,
+                                     flags=re.I)
+                    events[k] = parts[0].strip()
+                    if len(parts) > 1:
+                        costs[k] = parts[1].strip().rstrip(".")
         if not premise or not any(events):
             return False
         self.plot_premise = premise
         self.plot_events = events
+        self.plot_costs = costs
         return True
 
     def ensure_plot(self, complete) -> bool:
@@ -1509,7 +1529,9 @@ class PathNavigator(Navigator):
             telling=self.telling_line, correspondents=self.correspondents_line,
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
-                e for e in self.plot_events[:self.i + 1] if e))
+                e for e in self.plot_events[:self.i + 1] if e),
+            plot_state="; ".join(               # ...but landed PRICES ride every frame
+                c for c in self.plot_costs[:self.i + 1] if c))
 
     def _next_corridor_plan(self) -> "PagePlan | None":
         """The next TWEEN frame for the current corridor, or None when the run is spent.
@@ -1568,7 +1590,9 @@ class PathNavigator(Navigator):
             telling=self.telling_line, correspondents=self.correspondents_line,
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
-                e for e in self.plot_events[:self.i + 1] if e))
+                e for e in self.plot_events[:self.i + 1] if e),
+            plot_state="; ".join(               # ...but landed PRICES ride every frame
+                c for c in self.plot_costs[:self.i + 1] if c))
 
     def _plan_at(self, mode: str, node: str, start: int) -> "PagePlan":
         # Stamp the NARRATIVE FRAME onto every path page (this is what makes a path
@@ -1601,8 +1625,11 @@ class PathNavigator(Navigator):
             plan.plot = self.plot_premise       # premise everywhere; the gate's own
             _done = j if j is not None else self.i + 1   # event only ON the gate
             plan.plot_done = "; ".join(e for e in self.plot_events[:_done] if e)
+            plan.plot_state = "; ".join(c for c in self.plot_costs[:_done] if c)
             if j is not None and j < len(self.plot_events):
                 plan.plot_event = self.plot_events[j]
+                if j < len(self.plot_costs):
+                    plan.plot_cost = self.plot_costs[j]
         # Arriving at the gate the corridor tween'd toward: the approach spent the node's
         # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
         # node once between them, and the arrival never re-reads tween material.
@@ -2054,11 +2081,10 @@ FORMS = {
         "through TIME: action and consequence, cause leading to effect, grounded in what can be "
         "seen, heard, and touched. Follow a vantage close enough that the reader LIVES the "
         "material rather than being told it, and let meaning surface from what happens — never "
-        "stop to explain or summarize. Tell it as ITSELF, never as reportage: do not cite, "
-        "quote, or attribute the material's author, speaker, or sources (no \"he said\", no "
-        "\"X writes\", no \"according to…\") — whatever the material knows becomes what the "
-        "story's WORLD contains: its facts are events, its ideas live inside figures, places, "
-        "and happenings. When the material is abstract (an idea, a principle, a definition), "
+        "stop to explain or summarize. Tell it as ITSELF, never as reportage: the material's "
+        "author, speakers, and sources stay outside the story — whatever the material knows "
+        "becomes what the story's WORLD contains: its facts are events, its ideas live inside "
+        "figures, places, and happenings. When the material is abstract (an idea, a principle, a definition), "
         "dramatize it: a concrete instance, a moment where it is at stake, someone meeting it "
         "head-on — the idea carried by the scene, not stated beside it. Continuous prose in "
         "whatever tense and person the telling has established; scene over summary; let "
@@ -2788,7 +2814,7 @@ class Renderer:
         if plan.correspondents and self.form in _CAST_FORMS:
             parts.append("co-" + hashlib.sha1(plan.correspondents.encode()).hexdigest()[:6])
         if plan.plot:
-            _pl = f"{plan.plot}|{plan.plot_event}|{plan.plot_done}"
+            _pl = f"{plan.plot}|{plan.plot_event}|{plan.plot_done}|{plan.plot_state}"
             parts.append("pl-" + hashlib.sha1(_pl.encode()).hexdigest()[:6])
         parts.append(plan.key())
         return ":".join(parts)
@@ -2924,6 +2950,10 @@ class Renderer:
                 _jlines.append(f"plot: {plan.plot}")
             if plan.plot_done:
                 _jlines.append(f"already happened: {plan.plot_done}")
+            if plan.plot_state:
+                # standing consequences — present-tense state every page lives
+                # inside (a spent voice stays spent; the fallout is the story)
+                _jlines.append(f"standing now, not undone: {plan.plot_state}")
             if plan.canon:
                 _jlines.append(f"established names (reuse, never rename): {plan.canon}")
             # The same silent-context convention as the recap block (which has never
@@ -2981,18 +3011,25 @@ class Renderer:
                              f"paragraphs of full sentences — a tween is prose, never a "
                              f"stack of one-line fragments. Paraphrase, {invent}.\n\n")
             elif _ev:
+                # A planned PRICE is sanctioned story consequence — the scene must
+                # spend it, and it stays spent (the journey's `standing` line
+                # carries it forward so later pages deal with the fallout).
+                _price = plan.plot_cost.rstrip(". ").strip()
+                _mark = (f" Let it leave its mark — by this scene's end, {_price} — "
+                         f"and the mark stays.") if _price else ""
                 if self.form in _PLOT_ENACTED:
                     if plan.mode == "open":
                         _verb = (f"Open the story: sketch the standing world in a few "
                                  f"strokes — one distinct sensory register, painted once — "
-                                 f"then write the scene in which {_ev}.")
+                                 f"then write the scene in which {_ev}.{_mark}")
                     elif _arc_pos == "last":
-                        _verb = (f"Write the final scene, in which {_ev}. Bring one image "
-                                 f"from the journey's start back, changed.")
+                        _verb = (f"Write the final scene, in which {_ev}.{_mark} Bring "
+                                 f"one image from the journey's start back, changed.")
                     else:
-                        _verb = f"Write the scene in which {_ev}."
+                        _verb = f"Write the scene in which {_ev}.{_mark}"
                 else:
-                    _verb = f"Carry the journey to its next development: {_ev}."
+                    _verb = (f"Carry the journey to its next development: {_ev}."
+                             + (f" Its price: {_price}." if _price else ""))
                 _cov = (self.form_coverage + " ") if self.form_coverage else ""
                 task_line = (f"NOW: {_verb} Stage it with the material above. {_cov}"
                              f"Paraphrase rather than quote, {invent_page}.\n\n")
@@ -3025,7 +3062,9 @@ class Renderer:
                     f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
                     f"dramatize it. Invent texture, incident, and minor figures within the "
                     f"journey's committed viewpoint, cast, and events, never contradicting "
-                    f"the material's facts.")
+                    f"the material's facts. The world's lore is canon; what this journey "
+                    f"COSTS its figures is the story's to spend — wounds and losses may "
+                    f"land here, and they stay.")
             else:
                 dream_directive = (
                     f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
