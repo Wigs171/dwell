@@ -668,9 +668,9 @@ class PagePlan:
         raw = (f"{self.came_from}|{self.mode}|{self.node}|"
                f"{self.facet_start}|{self.take}|{self.steer_bucket}")
         if self.goal:         # a path frame — keep it distinct per goal (append-only, so
-            raw += f"|g3|{self.goal}"  # non-path keys are byte-for-byte unchanged; g3 = the
-            if self.arc:      # 2026-07-03 beat-function rework, retiring earlier path pages)
-                raw += f"|{self.arc}"   # arc-aware forms: same node, different beat = new page
+            raw += f"|g4|{self.goal}"  # non-path keys are byte-for-byte unchanged; g4 = the
+            if self.arc:      # 2026-07-04 frame rebuild (journey data + event-as-task),
+                raw += f"|{self.arc}"   # retiring pages written under the directive-stack style
             if self.next_locked:        # a leaning close is a different page than an open one
                 raw += "|L"
         if self.tween_t:      # each TWEEN position caches separately (else all N collapse to one)
@@ -1079,6 +1079,7 @@ class PathNavigator(Navigator):
         # first-seen order, pinned into every path page so the rolling tail/recap can't
         # rotate identities out of existence. Fed by observe_canon() after each render.
         self.canon: list[str] = []
+        self._canon_word_pages: dict[str, int] = {}   # lone-word canon needs 2 pages
         # OPENING VARIETY — the flip side of the sink: the sink keeps WHO/WHAT stable,
         # this keeps HOW each page ENTERS varied. Without it the sink's pinned figure
         # gets opened on every page ("Maren did X" ×N), which reads as the same idea
@@ -1226,6 +1227,10 @@ class PathNavigator(Navigator):
                    "His", "Her", "Their", "When", "Where", "What", "That", "This",
                    "These", "Those", "There", "Then", "Now", "Here", "If", "As",
                    "Of", "To", "From", "With", "Not", "No", "All", "Each", "Every"}
+    # Meta-role nouns never canonize: a hallucinated narrator-of-the-rules (the
+    # "Archivist" incident) must not be pinned by the sink and told to recur.
+    _CANON_META = {"Archivist", "Narrator", "Chronicler", "Scribe", "Author",
+                   "Reader", "Editor", "Curator", "Recorder", "Storyteller"}
 
     def observe_canon(self, text: str) -> None:
         """Harvest ESTABLISHED elements from a rendered path page into the sink:
@@ -1248,6 +1253,14 @@ class PathNavigator(Navigator):
             # (often just a sentence-opener) must earn it with 3
             need = 2 if " " in r else 3
             if counts[r] >= need and r not in self.canon:
+                if r in self._CANON_META or r.split()[-1] in self._CANON_META:
+                    continue                     # narrators-of-the-rules never canonize
+                if " " not in r:
+                    # a lone word must also recur across TWO pages — one page's
+                    # hallucination (an "Archivist" talking to itself) isn't canon
+                    self._canon_word_pages[r] = self._canon_word_pages.get(r, 0) + 1
+                    if self._canon_word_pages[r] < 2:
+                        continue
                 if any(r != c and r in c for c in self.canon):
                     continue                     # "Maren" when "Maren Vote" is known
                 self.canon = [c for c in self.canon if not (c != r and c in r)]
@@ -1767,6 +1780,8 @@ Before finishing, silently check the draft and rewrite whatever fails:
 itself (pages, sections, "as we saw", "earlier")?
 [ ] no sentence names the act of connecting ideas ("thread", "hinge", "bridge", "tie \
 together", "weave") — every relation stated directly instead?
+[ ] every sentence belongs to the work itself — none explains what the page is doing, \
+and no figure exists only to explain it?
 [ ] free of stock filler ("delve", "tapestry", "crucially", "it's worth noting", \
 "stands as a testament", "reminds us that")?
 [ ] every sentence complete and fully grammatical (articles and connectives intact), \
@@ -2242,7 +2257,9 @@ _PLOT_ENACTED = ("story", "case", "epistolary")
 
 
 def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
-    """Cast the path's leading vault entities into a form's people-roles. `leads_str`
+    """One compact DATA line naming the form's people-roles — rides the <journey>
+    block in the story's own register, never as imperative prose (instructions in
+    dramatic register leak into the fiction as narrators-of-the-rules). `leads_str`
     is "Name — who; Name — who" (1-2 leads, each 'who' from the entity's summary)."""
     leads = [l.strip() for l in leads_str.split(";") if l.strip()]
     if not leads:
@@ -2251,34 +2268,41 @@ def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
     if form == "epistolary":
         if len(leads) < 2:
             return ""
-        return ("These letters are written BETWEEN two real figures of this world — "
-                + "; ".join(leads) + " — each writing IN CHARACTER (their own knowledge, "
-                "stake, and voice) to the other, about the matter of the material below. "
-                "Address each letter to the other BY NAME (never a generic 'My friend —') "
-                "and make its writer clear; what each says, notices, and fears is shaped "
-                "by WHO THEY ARE and what this subject means to them.")
+        return ("correspondents: " + "; ".join(leads) + " — each letter is written by "
+                "one of them, in character, addressed to the other by name")
     if form == "debate":
         if len(leads) < 2:
             return ""
-        return ("The two sides are held by real figures of this world who genuinely "
-                "differ — " + "; ".join(leads) + ". Each argues IN CHARACTER, by name, "
-                "from their own knowledge and stake; the clash is between THESE people's "
-                "readings of the material, not abstract unnamed positions.")
+        return "debaters: " + "; ".join(leads) + " — each argues in character, by name"
     if form == "interview":
-        return ("The KNOWLEDGEABLE VOICE is a real figure of this world: " + leads[0]
-                + ". The unnamed host interviews THEM specifically; every answer comes in "
-                + names[0] + "'s own voice, knowledge, and stake — not a neutral narrator.")
+        return f"interviewee: {leads[0]} — every answer in {names[0]}'s own voice"
     if form == "story":
-        b = ("POINT OF VIEW — the vantage this story follows is " + leads[0]
-             + "; hold this viewpoint across the journey.")
+        line = f"point of view: {names[0]}"
         if cast_full:
-            b += (" Other real figures of this world may appear and SPEAK in quoted "
-                  "lines: " + cast_full + " — a story with no voices is a summary.")
-        return b
+            line += f"; figures who may appear and speak in quotes: {cast_full}"
+        return line
     if form == "case":
-        return ("This case is lived by real figures of this world — " + "; ".join(leads)
-                + " — who act and decide in character, by name; not anonymous actors.")
+        return "lived by: " + "; ".join(leads) + " — acting in character, by name"
     return ""
+
+
+def _route_line(outline: str) -> str:
+    """Compress the numbered beat sheet into one 'route:' data line — the tier-2
+    whole-journey awareness at a tenth of the mass (a numbered outline in the
+    prompt invites the model to write ABOUT the outline)."""
+    stops, now = [], ""
+    for ln in outline.splitlines():
+        m = re.match(r"\s*\d+\.\s+(.+)", ln)
+        if not m:
+            continue
+        t = m.group(1)
+        here = "you are here" in t
+        t = re.split(r"\s+—\s+|\s+←", t)[0].strip()
+        if t:
+            stops.append(t)
+            if here:
+                now = t
+    return " → ".join(stops) + (f"  (now at {now})" if now else "")
 
 _FORM_COVERAGE = {
     "guided": ("Cover the material's ideas, but re-sequence them for LEARNING — the "
@@ -2815,58 +2839,35 @@ class Renderer:
             if _m:
                 _k, _n = int(_m.group(1)), int(_m.group(2))
                 _arc_pos = "first" if _k <= 1 else ("last" if _k >= _n else "middle")
+        # Path closes are ONE line each — a checkable criterion in the close ("end
+        # CHANGED", "the situation must differ") is a rubric the model performs as a
+        # closing summary paragraph; the plot event already IS the change.
         if plan.goal:
             if _arc_pos == "last":
-                close_line = ("This is the JOURNEY'S FINAL beat: land it. Bring the goalward "
-                              "line of thought to its arrival and let the whole journey end "
-                              "with weight — settled on substance, teeing up nothing.\n\n")
+                close_line = ("End the journey here — let the close settle with weight, "
+                              "teeing up nothing.\n\n")
             elif plan.next_locked and plan.toward:
-                # The next page is FORCED (the gate) — a lean here is a promise that
-                # cannot be broken, so the close MAY reach toward it by name. It still
-                # must not pre-tell the gate's substance: arrival does the revealing.
-                close_line = (f"The next page is CERTAIN: “{plan.toward}” comes next and "
-                              f"cannot be skipped. End leaning into that arrival — let the "
-                              f"close reach toward “{plan.toward}” — but never pre-tell its "
-                              f"substance; the arrival itself does the revealing.\n\n")
-            elif plan.mode == "bridge" and plan.toward:
-                # Mid-run tween: the page IS motion toward the gate (named throughout),
-                # but more motion comes before it lands — keep the arrival unspent.
-                close_line = (f"You are MID-MOTION toward “{plan.toward}”: end with the "
-                              f"pull still strong and the arrival unspent — more motion "
-                              f"comes before “{plan.toward}” lands, so never pre-tell what "
-                              f"it holds.\n\n")
-            elif plan.toward:
-                # The gate WILL come, but maybe not next (the reader can drift) — so its
-                # pull may shape the close, but naming it as next would be a breakable
-                # promise. And the page must end MOVED-ON: closing on the same standing
-                # question every page is how a journey becomes one problem × N pages.
-                close_line = (f"You are MID-JOURNEY: end CHANGED — the situation at the "
-                              f"close must differ from this page's start, and the question "
-                              f"you leave open must be the NEW one this page raised, never "
-                              f"the journey's original problem restated. Don't wrap up as a "
-                              f"finished piece. The journey bends toward “{plan.toward}”: "
-                              f"let that pull be felt without naming it as the next page "
-                              f"(the reader may drift first).\n\n")
+                close_line = (f"The close may lean toward “{plan.toward}” (it comes next) "
+                              f"without telling what it holds.\n\n")
             else:
-                close_line = ("You are MID-JOURNEY: end CHANGED — the situation at the "
-                              "close must differ from this page's start, and the question "
-                              "left open must be the NEW one this page raised, never the "
-                              "journey's original problem restated. Not wrapped up as a "
-                              "finished piece; no specific next page promised.\n\n")
+                close_line = "Stop where the moment completes; leave the thread open.\n\n"
         else:
             close_line = ("Close on this page's own material — finish the thought and stop. "
                           "You don't know where the reader turns next, so lean nowhere.\n\n")
-        # PATH FRAME — tells the page it's one beat of a goal-directed journey (not a
-        # standalone article). This + the forward-lean close are what make a path cohere.
+        # PATH FRAME — the journey's state as ONE flat data block, in Mercury's XML
+        # convention, written in a neutral register (data, not drama). The 2026-07-04
+        # rebuild: sixteen ALL-CAPS directive blocks (~2k tokens) had grown around
+        # ~300 tokens of material, and Mercury began writing ABOUT the frame — an
+        # invented "Archivist" narrating the rules, pages opening/closing on
+        # requirement-summary paragraphs. The model imitates the dominant register
+        # of its context before it obeys content (NovelAI/ST practice; Mercury guide:
+        # data in tagged sections, criteria never in the draft prompt). So: state as
+        # data here; the ONE task imperative rides task_line at the end (recency).
         path_frame = ""
         if plan.goal:
-            where = f" (beat {plan.arc})" if plan.arc else ""
-            path_frame = (
-                f"GUIDED PATH{where} — one connected journey toward: {plan.goal}. Write this "
-                f"material as a step that ADVANCES that goal; embody it, never announce it. "
-                f"The whole path is ONE continuous experience: this page is the NEXT MOMENT "
-                f"of the same unfolding whole — never a self-contained piece, never a scene "
-                f"reset.\n\n")
+            _jlines = [f"goal: {plan.goal}"]
+            if plan.arc_outline:
+                _jlines.append("route: " + _route_line(plan.arc_outline))
             if plan.telling and self.form in _TELLING_FORMS:
                 _tn, _pn, _cast = (plan.telling.split("|", 2) + ["", ""])[:3]
                 spec = _FORM_TELLING[self.form]
@@ -2878,106 +2879,19 @@ class Renderer:
                 if spec["persons"]:
                     held.append(_pn)
                 if held:
-                    path_frame += ("THE TELLING (chosen for this journey — hold it on "
-                                   "EVERY page): " + ", ".join(held) + " throughout.\n\n")
-            # CAST — fill the form's people-roles with the path's leading vault entities,
-            # independent of the telling (interview/debate are present-tense but still
-            # want named figures). plan.telling's 3rd field carries the full cast list.
+                    _jlines.append("telling: " + ", ".join(held) + ", held on every page")
             if plan.correspondents and self.form in _CAST_FORMS:
                 _cast_full = (plan.telling.split("|", 2) + ["", "", ""])[2]
                 _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
                 if _cb:
-                    path_frame += _cb + "\n\n"
-            # THE PLOT / THE THROUGH-LINE — the journey's decided course. The beat
-            # (below) gives this page its dramatic SHAPE; the planned turn gives it
-            # its CONTENT — without one, a renderer left to invent development
-            # page-by-page defaults to none. Narrative forms ENACT the turns in
-            # scene; every other form ARRIVES at them through the material.
-            if plan.plot and self.form in _PLOT_ENACTED:
-                path_frame += (f"THE PLOT (decided for this whole journey — every "
-                               f"page serves it, no page announces it): "
-                               f"{plan.plot}\n")
-                if plan.plot_done:
-                    path_frame += (f"ALREADY HAPPENED: {plan.plot_done}. Done and "
-                                   f"standing — consequences persist; never rerun "
-                                   f"or undo these.\n")
-                if plan.plot_event:
-                    path_frame += (f"THIS PAGE'S EVENT — it takes place ON this "
-                                   f"page, enacted in scene through the material "
-                                   f"below, never summarized or deferred: "
-                                   f"{plan.plot_event}\n")
-                elif plan.mode == "bridge":
-                    path_frame += ("BETWEEN EVENTS: this frame is travel and "
-                                   "consequence — the last event's aftermath "
-                                   "drives the motion; the next event belongs to "
-                                   "the coming gate, not here.\n")
-                path_frame += "\n"
-            elif plan.plot:
-                path_frame += (f"THE THROUGH-LINE (planned for this whole journey "
-                               f"— every page advances it, no page announces it): "
-                               f"{plan.plot}\n")
-                if plan.plot_done:
-                    path_frame += (f"ALREADY ESTABLISHED: {plan.plot_done}. "
-                                   f"Settled — build on these; never re-derive or "
-                                   f"restate them.\n")
-                if plan.plot_event:
-                    path_frame += (f"THIS PAGE'S TURN — the development this page "
-                                   f"arrives at, earned through the material "
-                                   f"below, never merely announced: "
-                                   f"{plan.plot_event}\n")
-                elif plan.mode == "bridge":
-                    path_frame += ("BETWEEN TURNS: consolidate and carry — let "
-                                   "the last turn's consequences work on this "
-                                   "material; the next turn belongs to the "
-                                   "coming gate, not here.\n")
-                path_frame += "\n"
-            if plan.beat:
-                path_frame += (
-                    f"THIS BEAT'S JOB (the page is one step of a story-shaped journey, "
-                    f"not an essay on its theme — by the end of this page the situation "
-                    f"must be DIFFERENT from its start): {plan.beat}\n\n")
+                    _jlines.append(_cb)
+            if plan.plot:
+                _jlines.append(f"plot: {plan.plot}")
+            if plan.plot_done:
+                _jlines.append(f"already happened: {plan.plot_done}")
             if plan.canon:
-                path_frame += (
-                    f"ESTABLISHED so far (keep these stable — reuse them; never invent "
-                    f"replacements for what already exists): {plan.canon}\n"
-                    f"Everything above is ALREADY KNOWN to the reader: never re-introduce, "
-                    f"re-explain, or restate it — build on it and MOVE.\n\n")
-            if plan.avoid_openings:
-                # Most pages don't need an OPENING at all — just a transition: in a
-                # book, page breaks are invisible and the text simply continues. An
-                # entry exists only at real boundaries (the establish page, the turn,
-                # the resolution); everywhere else the first sentence is the NEXT
-                # sentence of the ongoing text.
-                _boundary = plan.mode == "open" or (plan.beat and (
-                    plan.beat.startswith("ESTABLISH")
-                    or plan.beat.startswith("THE TURN")
-                    or plan.beat.startswith("RESOLVE")))
-                if _boundary:
-                    path_frame += (
-                        f"RECENT PAGES BEGAN: «{plan.avoid_openings}». This beat earns a "
-                        f"real entrance — and the doorways are MANY: mid-action, a line "
-                        f"of speech, a thought or a question, someone arriving or "
-                        f"leaving, an object at work, a change just noticed, a memory "
-                        f"surfacing, a decision being made, a sound or a smell, the "
-                        f"light if it just changed, a closer or wider view. Any entry "
-                        f"works so long as it continues the journey — just not a "
-                        f"doorway used lately.\n\n")
-                else:
-                    path_frame += (
-                        f"NO OPENING — this page is a TRANSITION: its first sentence is "
-                        f"simply the NEXT sentence of the text above, as if the page "
-                        f"break did not exist. No entrance, no re-orientation, no "
-                        f"scene-setting — pick up mid-flow and keep going. (Recent "
-                        f"pages began: «{plan.avoid_openings}» — begin unlike these, "
-                        f"which is to say: don't begin at all, continue.)\n\n")
-            # Tier-2 whole-arc foreknowledge — KEYFRAMES only. Plant/pay-off is a beat's
-            # job; a tween is motion between beats and doesn't need the outline's weight.
-            if plan.arc_outline and plan.mode != "bridge":
-                path_frame += (
-                    f"THE ARC (the whole shape — use it silently, never narrate it):\n"
-                    f"{plan.arc_outline}\n"
-                    f"PLANT a detail a later beat can pay off; harvest what an earlier beat "
-                    f"planted.\n\n")
+                _jlines.append(f"established names (reuse, never rename): {plan.canon}")
+            path_frame = "<journey>\n" + "\n".join(_jlines) + "\n</journey>\n\n"
         guide = "; ".join(plan.headings[:4]) or plan.title
         # A confluence/bridge frame SYNTHESIZES across anchors; a normal frame retells one
         # node's material in facet order. (DWELL_PATHS.md — the confluence is the unit.)
@@ -3010,6 +2924,47 @@ class Renderer:
             # article — the full survey: touch everything, in the material's order
             task_line = (f"NOW: {instr} Retell the material above, touching in order on "
                          f"[{guide}]; paraphrase rather than quote, {invent_page}.\n\n")
+        # PATH task — overrides the branches above. The plot event IS the task
+        # ("write the scene in which X"): framed as content to stage, not criteria to
+        # satisfy, there is nothing left to perform as a requirement-summary
+        # paragraph. One entrance/transition clause rides it; that's the whole frame.
+        if plan.goal and plan.mode in ("open", "move", "dwell", "bridge"):
+            _ev = plan.plot_event.rstrip(". ").strip()
+            if plan.mode == "bridge":
+                _through = (f" The way passes through “{plan.headings[1]}” — bring what "
+                            f"it adds into the story." if len(plan.headings) == 3 else "")
+                task_line = (f"NOW: Continue the journey from “{_ta}” toward “{_tb}” — a "
+                             f"short page of road between them, made from the material "
+                             f"above.{_through} Carry forward the consequence of what just "
+                             f"happened; approach “{_tb}” but stop short of it. Flowing "
+                             f"paragraphs of full sentences — a tween is prose, never a "
+                             f"stack of one-line fragments. Paraphrase, {invent}.\n\n")
+            elif _ev:
+                if self.form in _PLOT_ENACTED:
+                    if plan.mode == "open":
+                        _verb = (f"Open the story: sketch the standing world in a few "
+                                 f"strokes — one distinct sensory register, painted once — "
+                                 f"then write the scene in which {_ev}.")
+                    elif _arc_pos == "last":
+                        _verb = (f"Write the final scene, in which {_ev}. Bring one image "
+                                 f"from the journey's start back, changed.")
+                    else:
+                        _verb = f"Write the scene in which {_ev}."
+                else:
+                    _verb = f"Carry the journey to its next development: {_ev}."
+                _cov = (self.form_coverage + " ") if self.form_coverage else ""
+                task_line = (f"NOW: {_verb} Stage it with the material above. {_cov}"
+                             f"Paraphrase rather than quote, {invent_page}.\n\n")
+            elif plan.beat:                     # plotless fallback — the beat is the job
+                task_line = (f"NOW: {instr} This page's job: {plan.beat}\n"
+                             f"Paraphrase rather than quote, {invent_page}.\n\n")
+            _entrance = plan.mode == "open" or _arc_pos == "last"
+            if _entrance and plan.avoid_openings:
+                task_line += (f"Enter by a fresh doorway — recent pages began "
+                              f"«{plan.avoid_openings}»; begin differently.\n\n")
+            elif not _entrance:
+                task_line += ("Begin mid-flow: the first sentence continues the text "
+                              "above as if the page break did not exist.\n\n")
         # CREATIVITY (dream) directive — placed late (recency) so it can license invention
         # over the default faithful stance. Two bands: creative telling vs full dramatize.
         dream_directive = ""
@@ -3040,7 +2995,10 @@ class Renderer:
         if self.form_phases:
             if plan.goal and plan.mode == "dwell" and "dwell" in self.form_phases:
                 phase_note = "\n" + self.form_phases["dwell"]
-            elif _arc_pos:
+            elif _arc_pos and not (plan.plot_event and self.form in _PLOT_ENACTED):
+                # a plot event driving the task IS this page's phase — the note's
+                # "something HAPPENS / situation DIFFERENT" rubric would only
+                # re-state criteria the event already embodies (the Archivist lesson)
                 phase_note = "\n" + self.form_phases[_arc_pos]
         channels = [f"<voice>VOICE (hold this): {self.voice_anchor}</voice>"]
         if self.form_directive:
