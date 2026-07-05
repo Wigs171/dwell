@@ -222,7 +222,7 @@
 
         <div class="card">
           <h2>Reading model <span class="note">· Mercury</span></h2>
-          <p class="hint">Dwell reads with <strong>Mercury</strong> — a text-diffusion model, the special engine that makes the streaming reader work. There's no alternative to swap in.</p>
+          <p class="hint">Dwell reads with <strong>Mercury</strong> — a text-diffusion model, the engine the streaming reader is built on. The requirement is text <em>diffusion</em>, not the vendor: it's the only wired-in engine today, though open-weights alternatives now exist for self-hosters.</p>
           <div class="color-row"><label for="mk">Mercury key</label>
             {#if dwell.mercuryHasKey && !editingMercury}
               <span class="ep-models">set ✓</span>

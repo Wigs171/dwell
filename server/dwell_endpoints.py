@@ -164,7 +164,7 @@ def test_endpoint(req: EndpointIn) -> dict:
 
 
 # ---- reader (Mercury) key — its own spot, separate from the ingest endpoints --------
-# Mercury (Inception text-diffusion) is the ONLY reading engine; this is just its key.
+# Mercury (Inception text-diffusion) is the only wired-in reading engine; this is its key.
 _MERCURY_STORE = VAULT_ROOT / ".dwell-mercury.json"
 reader_router = APIRouter(prefix="/reader", tags=["reader"])
 

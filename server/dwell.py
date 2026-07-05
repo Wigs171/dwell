@@ -2637,10 +2637,13 @@ class Renderer:
         self.set_form(form)
         self.set_language(language)
         self.set_dream(0.0)
-        # Mercury (Inception text-diffusion) is the ONLY reading engine — there is no
-        # alternative to swap in. The key may come from the UI (Settings → Read) or .env.
+        # Mercury (Inception text-diffusion) is the only WIRED-IN reading engine. The
+        # hard requirement is the CATEGORY — a text-diffusion model (refine-in-place
+        # streaming) — not the vendor; DiffusionGemma (open weights, vLLM-servable,
+        # 2026-07) is the first alternative in the category, not yet integrated.
+        # The key may come from the UI (Settings → Read) or .env.
         self._mercury_key = mercury_key or ""
-        # Mercury 2 (Inception diffusion LLM) is the ONLY render engine. The Anthropic
+        # Mercury 2 is the only wired-in render engine. The Anthropic
         # autoregressive path didn't pan out with this framework and was retired as an
         # engine — if Mercury is unavailable the renderer falls to DRY, with no fallback.
         # (`provider` is kept for signature compatibility but ignored; the Anthropic API

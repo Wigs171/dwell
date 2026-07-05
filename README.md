@@ -57,8 +57,16 @@ each labeled with measured speed and honest per-page cost (bring your own
 Dwell's reader is built on **Mercury**, a text-*diffusion* model from
 [Inception](https://inceptionlabs.ai) (OpenAI-compatible API). This is a
 deliberate design choice — the streaming, refine-in-place reading effect depends
-on a diffusion LLM, and there is currently no drop-in substitute. Set
+on a diffusion LLM, so an ordinary autoregressive model can't be swapped in. Set
 `INCEPTION_API_KEY` (in `.env` or the in-app Settings) to use the live reader.
+
+> **Other diffusion engines:** Mercury is the only *wired-in* engine today, but the
+> constraint is the category, not the vendor. Google's
+> [DiffusionGemma](https://deepmind.google/models/gemma/diffusiongemma/)
+> (open weights, Apache 2.0, `vllm serve google/diffusiongemma-26B-A4B-it` gives an
+> OpenAI-compatible endpoint) is the first open alternative — ~24 GB+ of VRAM or a
+> rented GPU, and note it commits 256-token blocks, so the whole-page live-morph
+> visual may differ. Not integrated yet; if you wire it up, we'd love the PR.
 
 Without it, the reader falls back to a free **"dry" mode** that stitches the raw
 vault text together with no LLM — fine for verifying the app runs, but it is not
@@ -216,5 +224,6 @@ This is an early public release. A few things to know:
 
 - **Research prompts** in Learn need a web-search key — set Tavily / Brave / Jina in
   Settings → Learn → Web search (or via the variables in `.env.example`).
-- The reader is **Mercury-only** by design (see above).
+- The reader is **diffusion-only** by design; Mercury is the only wired-in engine
+  today (see above for the first open-weights alternative, if you have the GPU).
 - See [docs/](docs/) for design notes and the roadmap.
