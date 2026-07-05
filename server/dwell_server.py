@@ -1263,8 +1263,9 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
                 s.renderer.set_voice(lens["voice"])
             if lens.get("language"):
                 s.renderer.set_language(lens["language"])
-            dv = lens.get("dream")                   # paths read as narrative by default;
-            s.renderer.set_dream(0.35 if dv is None else float(dv))   # a path may set/opt out
+            dv = lens.get("dream")                   # a lens applies ONLY what it declares —
+            if dv is not None:                       # otherwise the reader's current settings
+                s.renderer.set_dream(float(dv))      # ride into the path unchanged
             s.nav = PathNavigator(s.brain, resolved, s.rng, s.history,
                                   goal=pdata.get("goal") or "",
                                   confluence=bool(pdata.get("confluence", True)),
@@ -1706,8 +1707,10 @@ def generate_path(req: GenerateReq) -> dict:
                            temperature=float(req.temperature or 0.6), history=s.history)
     titles = [s.brain.nodes[n].title for n in spine if n in s.brain.nodes]
     meta = _narrativize(s, spine, titles)
+    # No lens: a generated path takes on whatever the reader's settings are at the
+    # moment they walk it (curated paths may still ship an explicit lens).
     s.generated_path = {"id": "__generated__", "title": meta["title"], "goal": meta["goal"],
-                        "spine": spine, "lens": {"form": "guided"}}
+                        "spine": spine, "lens": {}}
     return {"id": "__generated__", "title": meta["title"], "goal": meta["goal"],
             "gates": len(spine), "spine": spine, "titles": titles, "cost": _cost(s)}
 

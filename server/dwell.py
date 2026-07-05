@@ -1927,36 +1927,58 @@ DEFAULT_VOICE = "clean"
 # SAME material to the chosen level. Part of the render cache key, so each level keeps
 # its own pages. 'general' is the house register (no extra constraint).
 DEFAULT_LEVEL = "general"
+# A level is a COMPREHENSION CONTRACT, not just a register: it governs what a page
+# ATTEMPTS (how many ideas, what is assumed, what gets dropped) before it governs
+# how the sentences sound. The old directives set only words-and-sentences, so
+# Elementary read as the same information load in shorter words — a readability
+# costume. A real children's book picks ONE idea and lets the rest go; a real
+# monograph assumes fluency and spends the space on precision and implication.
+# (The same lesson as _FORM_COVERAGE: selection is the axis, diction follows.)
 LEVELS = {
     "general": "",
     "elementary": (
-        "READING LEVEL — elementary, ages 7-10. Use very simple, common words and short "
-        "sentences (rarely over 12 words). Build every idea from scratch with everyday examples "
-        "and comparisons a young child knows (toys, animals, family, school). No jargon; if a hard "
-        "word is truly needed, say it once and immediately explain it in plain words. Warm and "
-        "encouraging; one idea at a time."
+        "READING LEVEL — a children's book page, ages 7-10. Choose the ONE idea on this "
+        "page a child could retell tomorrow, and let everything else in the material go — "
+        "a children's book never tries to say it all. Explain that idea entirely through "
+        "things a child already knows (animals, food, weather, games, family, school): "
+        "every strange thing becomes a familiar thing wearing a costume. Say the important "
+        "thing more than once, each time in new clothes. Very simple words, short "
+        "sentences (rarely over 12 words) gathered into small flowing paragraphs — a "
+        "storybook page, never a list of lines. Warm and full of wonder. No jargon; "
+        "when a special word truly must appear, teach it like a new friend's name — "
+        "say it, explain it, use it again."
     ),
     "middle": (
-        "READING LEVEL — middle school, ages 11-13. Plain everyday vocabulary, mostly short and "
-        "direct sentences. Introduce any specialised term with a quick, familiar comparison. Keep "
-        "it concrete and vivid; favour examples over abstraction."
+        "READING LEVEL — middle school, ages 11-13. Pick the TWO or THREE ideas that "
+        "matter most and drop the rest; each idea earns a concrete example from daily "
+        "life before any generalization. Assume no background: define every specialised "
+        "term the first time via a familiar comparison. Cause-and-effect over "
+        "abstraction; plain vocabulary, short direct sentences."
     ),
     "high": (
-        "READING LEVEL — high school, ages 14-18. Clear, standard prose. You may use specialised "
-        "vocabulary, but gloss each term in plain words the first time it appears. Mix concrete "
-        "examples with the underlying ideas; moderate sentence length."
+        "READING LEVEL — high school, ages 14-18. The page's main ideas with their WHY, "
+        "trimmed of specialist detail that doesn't earn its place; a concrete example "
+        "stands beside every abstraction. Assume general literacy but no field "
+        "background: gloss each technical term in plain words at first use. Clear "
+        "standard prose, moderate sentence length."
     ),
     "college": (
-        "READING LEVEL — undergraduate. Write for an educated adult reader: full vocabulary and "
-        "conceptual nuance. You may assume general background, but still introduce field-specific "
-        "terms briefly. Develop arguments, not just facts."
+        "READING LEVEL — undergraduate. Write for an educated adult new to THIS field: "
+        "full ideas with mechanism and evidence, arguments developed rather than facts "
+        "listed, connections to neighboring ideas made explicit. Field-specific terms "
+        "used precisely and introduced briefly once. Full vocabulary and nuance."
     ),
     "scholar": (
-        "READING LEVEL — graduate / specialist. Write for an expert reader: use the field's precise "
-        "terminology without basic glosses, engage nuance, qualification and scholarly tension, and "
-        "assume command of the background. Dense and exact."
+        "READING LEVEL — graduate / specialist. Write for an expert: assume command of "
+        "the background and spend the space where an expert profits — precision, "
+        "qualification, limits, competing readings, implications. The field's "
+        "terminology without basic glosses; dense and exact; never simplified at the "
+        "cost of accuracy."
     ),
 }
+# Page length scales with level — a children's page IS shorter; length is part of
+# the contract (multiplies the persona's word target, tweens included).
+_LEVEL_WORDS = {"elementary": 0.55, "middle": 0.8}
 
 
 # Output FORM — the rhetorical SHAPE of the page, ORTHOGONAL to voice (how it sounds)
@@ -2692,6 +2714,12 @@ class Renderer:
         level = (level or DEFAULT_LEVEL).strip().lower()
         self.level = level if level in LEVELS else DEFAULT_LEVEL
         self.level_directive = LEVELS[self.level]
+        # Cache id hashes the directive (parity with form_id/voice_id) so redefining
+        # what a level MEANS retires pages written under the old meaning; the bare
+        # level name alone kept stale pages alive across directive rewrites.
+        self.level_id = self.level if self.level == DEFAULT_LEVEL else (
+            "lv-" + self.level + "-"
+            + hashlib.sha1(self.level_directive.encode()).hexdigest()[:6])
 
     def set_form(self, form: str) -> None:
         """Switch the output FORM — the rhetorical shape of the page (article / guided /
@@ -2747,7 +2775,7 @@ class Renderer:
         if self.form != DEFAULT_FORM:
             parts.append(self.form_id)
         if self.level != DEFAULT_LEVEL:
-            parts.append(self.level)
+            parts.append(self.level_id)
         if self.language != DEFAULT_LANGUAGE:
             parts.append(self.language_id)
         if self.dream > 0:
@@ -2880,7 +2908,10 @@ class Renderer:
                 if spec["persons"]:
                     held.append(_pn)
                 if held:
-                    _jlines.append("telling: " + ", ".join(held) + ", held on every page")
+                    # key is "told in", not "telling" — the CREATIVITY text says "the
+                    # framing is yours", and an earlier wording ("the telling is
+                    # yours") lexically contradicted this line's tense/person contract
+                    _jlines.append("told in: " + ", ".join(held) + ", held on every page")
             if plan.correspondents and self.form in _CAST_FORMS:
                 _cast_full = (plan.telling.split("|", 2) + ["", "", ""])[2]
                 _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
@@ -2905,9 +2936,9 @@ class Renderer:
         # The invention clause loosens with the DREAM dial: at 0 the facts AND telling stay
         # bound to the material; above 0, facts stay canon but the telling gets license.
         invent = ("invent no facts beyond the material" if self.dream <= 0
-                  else "keep the facts true to the material — invent the connective telling (see CREATIVITY)")
+                  else "keep the facts true to the material — the connective framing is yours (see CREATIVITY)")
         invent_page = ("invent nothing beyond it" if self.dream <= 0
-                       else "keep the facts true to the material — the telling is yours (see CREATIVITY)")
+                       else "keep the facts true to the material — the framing and language are yours (see CREATIVITY)")
         if plan.mode == "bridge":
             # A TWEEN is a SHORT motion frame (~half a keyframe), the felt movement between
             # beats — not a summary of either node. Keyframes carry the substance. (Its
@@ -2979,10 +3010,19 @@ class Renderer:
             pct = int(round(self.dream * 100))
             if self.dream < 0.66:
                 dream_directive = (
-                    f"\n\nCREATIVITY (dial {pct}%): the material's FACTS are canon; the TELLING "
-                    f"is yours. Invent framing, analogy, and concrete illustration not in the "
+                    f"\n\nCREATIVITY (dial {pct}%): the material's FACTS are canon; the FRAMING "
+                    f"is yours. Invent analogy and concrete illustration not in the "
                     f"source, so this reads as narrative rather than summary — every image "
                     f"earned, the craft rules above still binding.")
+            elif plan.plot:
+                # High dream on a PLOT path: the journey already committed a viewpoint,
+                # cast, and events — license invention WITHIN them, or (with recency
+                # advantage over the journey block) this clause overrides the contract.
+                dream_directive = (
+                    f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
+                    f"dramatize it. Invent texture, incident, and minor figures within the "
+                    f"journey's committed viewpoint, cast, and events, never contradicting "
+                    f"the material's facts.")
             else:
                 dream_directive = (
                     f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
@@ -3033,11 +3073,12 @@ class Renderer:
         # (a form or level is active alongside the voice); voice-only renders skip it.
         arbitration = ""
         if self.level_directive or any(c.startswith("<form>") for c in channels):
-            arbitration = ("\nKeep the channels separate: READING LEVEL governs sentence "
-                           "length and vocabulary and is non-negotiable; FORM governs "
-                           "structure; VOICE governs diction, imagery, rhythm and stance "
-                           "ONLY. If they pull apart, hold the level, keep the form, and "
-                           "let the voice flex within them.")
+            arbitration = ("\nKeep the channels separate: READING LEVEL governs how much "
+                           "the page attempts — how many ideas it carries and what it "
+                           "assumes — as well as sentence length and vocabulary, and is "
+                           "non-negotiable; FORM governs structure; VOICE governs diction, "
+                           "imagery, rhythm and stance ONLY. If they pull apart, hold the "
+                           "level, keep the form, and let the voice flex within them.")
         axes_block = (
             "\n\n— STYLE CHANNELS (independent axes; blend them) —\n"
             + "\n".join(channels) + arbitration + lang_clause
@@ -3066,6 +3107,7 @@ class Renderer:
         _bridge = plan.mode == "bridge"
         _shape = _TWEEN_SHAPE if _bridge else self.form_shape
         _n = max(120, PAGE_WORDS // 2) if _bridge else PAGE_WORDS
+        _n = int(_n * _LEVEL_WORDS.get(self.level, 1.0))   # a child's page is shorter
         system = (f"<voice>\n{self.voice_directive}\n</voice>\n\n" + lang_block + level_block
                   + _PERSONA.format(topic=self.topic or "this subject",
                                     n=_n, shape=_shape))
