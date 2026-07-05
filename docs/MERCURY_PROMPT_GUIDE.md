@@ -172,9 +172,42 @@ remaining: {json of remaining fields}
 
 ---
 
+## 7. Render-frame lessons (2026-07-04 — the "Archivist" incident)
+Learned the hard way when a story path grew an invented character who existed only to
+explain how the story met the prompt's criteria. Measured cause: the path frame had
+accreted to ~7:1 instructions-to-material across sixteen ALL-CAPS directive blocks.
+
+- **The model imitates the REGISTER of its context before it obeys the content.** A
+  frame written as capitalized dramatic proclamation grows a dramatic proclaiming
+  character in the fiction. Instructions must be flat and boring so the material is
+  the loudest thing in context (NovelAI practice: write context data in the story's
+  own register, or neutrally — never as imperative drama).
+- **State is data; the task is one imperative, last.** Dynamic state (goal, route,
+  telling, plot, canon) rides ONE flat XML block. Evaluation criteria never go in a
+  draft prompt — a checkable claim ("by the end the situation must be DIFFERENT")
+  gets satisfied by *asserting* it in a closing summary paragraph. Make the criterion
+  the task instead: "Write the scene in which X" leaves nothing to perform.
+- **Every data block needs an explicit silence contract.** The recap's "(silent —
+  never quote or mention it)" never leaked once; an unmarked `<journey>` block was
+  narrated back as "the question that drives this moment…" plus a closing tour of
+  future gates as foreshadowing. Data without a privacy contract is treated as
+  content to cover.
+- **Budget the instruction mass** — ~200-300 tokens of directives around the material
+  on a non-frontier model; at 4:1+ instructions-to-material the model writes about
+  the frame.
+- **Regression guards earn their tokens.** A clause with a self-explaining
+  parenthetical ("a tween is prose, never a stack of one-line fragments") exists
+  because a failure already happened; deleting it in a slim-down revived the failure
+  within one run. Check a clause's history before cutting it.
+- **Watch cross-channel lexical collisions.** The journey pinned "telling: past
+  tense…" while the creativity dial said "the TELLING is yours" — a direct
+  contradiction in the same prompt. One concept, one word, everywhere.
+
+---
+
 ## Footnote
 These are starting points, not final answers — Inception's own caveat: optimize
 prompts by trial and error against an eval set that mirrors production. Reflects
 Mercury 2 behavior ~May 2026; re-check `llms.txt` for updates.
 
-*Saved 2026-06-21.*
+*Saved 2026-06-21; §7 added 2026-07-04.*

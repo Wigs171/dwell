@@ -146,6 +146,30 @@ the prompt misses without a visible reset.
 
 ---
 
+## Cloud narration voices — BUILT 2026-07-04 (the audio sibling of Phase 3)
+
+Distinct from Phase 3's *text* voice-from-a-sample: this is the **narrator audio**
+lane. `server/dwell_tts_cloud.py` + the "My voices" panel in Settings → Narration:
+
+- **Clone** a narrator from a ~10-15s recording (scripted in-app passage = a perfect
+  reference transcript for free) or an uploaded clip. One-time enrollment via fal.ai
+  (Qwen3-TTS): the speaker embedding comes back to disk (`~/Dwell/voices/<slug>/`) —
+  the raw recording is sent once, then the local embedding is the voice. Two clone
+  engines: Qwen (most natural) or Chatterbox (cheapest; enrollment is a free upload).
+- **Design** a voice from a text description alone — no audio involved.
+- **Preset voices** across four hosted models, with measured per-sentence speed and
+  honest per-page cost in the picker (MiniMax ≈2-3s/sentence and Inworld ≈4s are
+  live-narration fast; Qwen3-TTS and ChatterboxHD are pre-render tier).
+- Voice ids (`cloud:<slug>`, `cloud:<model>/<preset>`) ride the same per-sentence
+  `/tts` pipeline as Kokoro — karaoke and TTS-paced navigation unchanged. Kokoro
+  stays the local, free, instant default; the fal key lives in Settings (server-side
+  store; `.env` fallback `FALAI_API_KEY`).
+- **Consent is a UI gate, not a doc note**: cloning requires the "my voice, or one I
+  have permission to use" checkbox, with a plain disclosure that narration sends page
+  text + the voice to fal.ai. The firewall below applies in full.
+
+---
+
 ## ⚠ The ethics firewall (load-bearing — read before building Phase 3)
 
 Register-adaptation and vernacular-generation are **two different features** with different risk:
@@ -183,4 +207,4 @@ never imposed, never LLM-improvised.* Concretely:
 - Reading-level × tone entanglement — [Trott](https://seantrott.substack.com/p/measuring-the-readability-of-texts)
 - Describe-then-imitate style transfer — [STYLL](https://arxiv.org/html/2212.08986v3) · [CAT-LLM](https://arxiv.org/pdf/2401.05707)
 - Covert dialect bias — [Hofmann/Nature via Stanford HAI](https://hai.stanford.edu/news/covert-racism-ai-how-language-models-are-reinforcing-outdated-stereotypes) · label-amplification [arXiv:2605.24384](https://arxiv.org/html/2605.24384v1) · [Data Caricatures](https://arxiv.org/pdf/2503.10789)
-- TTS landscape / cloning (2026) — Kokoro default; Qwen3-TTS & VoxCPM2 for cloning, subprocess-isolated. (See the project's TTS research notes.)
+- TTS landscape / cloning (2026) — Kokoro (local default); Qwen3-TTS open weights for cloning + text-described voice design (validated locally and via fal.ai — see "Cloud narration voices" above); Chatterbox (Resemble, MIT) for cheap expressive cloning.

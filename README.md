@@ -22,11 +22,22 @@ vaults for you from your own files, links, or a topic, using an agent pipeline.
 tutorial, brief, case study, interview, debate, letters, chronicle) that re-pitch the same
 vault in place — arc-aware on a guided path (a tutorial's first beat orients, its last
 consolidates); **Guided Paths** (a firm spine of beats with fluid tween corridors between
-them, generated or authored); a **creativity dial** from faithful conveyance to dreamed
+them, generated or authored) — every path plans a **through-line** up front (a premise
+plus one causally-chained turn per gate, mined from the vault's own tensions), so a story
+path actually goes somewhere and an expository path builds to something; **reading
+levels** as real comprehension contracts (Elementary picks the one idea a child could
+retell tomorrow — shorter pages, simpler world — while Scholar spends the space on
+precision, from the same vault); a **creativity dial** from faithful conveyance to dreamed
 scene; **ghost doors** — unwritten links render as threshold pages, and what you find is
 staged as a *proposal* the vault can grow by (accepted only through a Learn build);
 **OKF interop** — read any [Open Knowledge Format](docs/DWELL_OKF.md) bundle as a vault
 and export any vault as one (lossless round trip, one click from the vault card).
+
+**Narration:** local Kokoro voices (instant, free, karaoke-highlighted) — plus an
+optional **cloud voice studio**: clone a narrator from a ~10-second recording or any
+clip, design one from a text description, or pick presets across four hosted models,
+each labeled with measured speed and honest per-page cost (bring your own
+[fal.ai](https://fal.ai) key; cloning is consent-gated and the voice lives on your disk).
 
 
 | Path | What it is |
@@ -131,6 +142,13 @@ fallbacks, so nothing is required up front:
   It's used automatically when present (espeak fallback for out-of-dictionary words);
   set `DWELL_TTS_G2P=espeak` to force the old path. *Install base misaki + spaCy only —
   do **not** `pip install misaki[en]`, which pulls a torch-heavy transformer dep.*
+- **Cloud narration voices** (optional): `pip install fal-client` and add a
+  [fal.ai](https://fal.ai) key (Settings → Read → Narration, or `FALAI_API_KEY` in
+  `.env`) to unlock the voice studio — clone a narrator from a short recording or an
+  uploaded clip (one-time enrollment; the voice embedding is stored under your vault
+  root), design a voice from a text description, or use hosted preset voices. The
+  picker shows each model's measured speed and rough per-page cost; Kokoro remains
+  the local, free default.
 
 ---
 
@@ -163,6 +181,7 @@ your vault root and never committed.
 | `ANTHROPIC_API_KEY` | Learn / ingest pipeline | — |
 | `COMPENDIUM_SEARCH_PROVIDER` / `COMPENDIUM_SEARCH_API_KEY` | Web research (`tavily`/`brave`/`jina`) | none |
 | `JINA_API_KEY` | Research + page-fetch via Jina | — |
+| `FALAI_API_KEY` | Cloud narration voices (clone/design/presets via fal.ai) | — (Kokoro/local only) |
 | `DWELL_VAULT_ROOT` | Where vaults live | `./vaults` |
 | `DWELL_HOST` / `DWELL_PORT` | Server bind address | `127.0.0.1` / `8000` |
 

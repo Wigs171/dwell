@@ -321,7 +321,8 @@ class DwellStore {
   toggleNarrate() {
     this.narrate = !this.narrate;
     ls.set('dwell-narrate', this.narrate ? '1' : '0');
-    if (this.narrate) this.playCurrent(); else this.narrator.stop();
+    if (this.narrate) this.playCurrent();
+    else { this.narrator.stop(); this.clearEarlyNarration(); }
   }
   setTtsVoice(v: string) { this.ttsVoice = v; ls.set('dwell-tts-voice', v); }
   setTtsSpeed(v: number) { this.ttsSpeed = v; ls.set('dwell-tts-speed', String(v)); }
@@ -329,6 +330,7 @@ class DwellStore {
   playCurrent() {
     const p = this.pages[this.cursor] ?? this.pages[this.pages.length - 1];
     if (!p?.text) return;
+    this.clearEarlyNarration();      // a full read owns the page — no stale remainder
     this.narratingKey = p.key;
     void this.narrator.speak(p.text, this.ttsVoice, this.ttsSpeed);
   }
@@ -375,6 +377,19 @@ class DwellStore {
     void this.narrator.speak(opening, this.ttsVoice, this.ttsSpeed);
   }
 
+  // Drop any in-flight early-narration state. MUST be called by every narration
+  // entry point that isn't the early flow itself (play, toggle-off, navigation,
+  // clarify read-back, re-pitch): narrator.stop() skips the natural-end callback,
+  // so an unconsumed #earlyRemainder would otherwise survive the interruption and
+  // fire after the NEXT natural end — replaying most of the same page.
+  private clearEarlyNarration() {
+    this.#earlyKey = null;
+    this.#earlyLen = 0;
+    this.#earlyRemainder = null;
+    this.#stablePrev = '';
+    this.#stableCount = 0;
+  }
+
   // Page landed: if we spoke the opening early, queue (or speak) the remainder at
   // the right character offset. Diffusion may have revised the opening after we
   // started — accept the seam; the remainder follows the FINAL text.
@@ -402,10 +417,11 @@ class DwellStore {
     else this.beginAt(seed);
   }
   private onNarrationEnd() {
-    if (this.#earlyRemainder) {            // finish the page before any advance
-      const r = this.#earlyRemainder; this.#earlyRemainder = null;
-      void this.narrator.speak(r.text, this.ttsVoice, this.ttsSpeed, r.offset);
-      return;
+    const rem = this.#earlyRemainder;      // finish the page before any advance —
+    this.#earlyRemainder = null;           // but only OUR page: a remainder whose key
+    if (rem && rem.key === this.narratingKey) {   // doesn't match is stale (interrupted
+      void this.narrator.speak(rem.text, this.ttsVoice, this.ttsSpeed, rem.offset);
+      return;                              // handoff) and must not replay the page
     }
     const q = this.queued;
     this.queued = null;
@@ -889,6 +905,7 @@ class DwellStore {
 
   beginAt(seed: string) {
     if (!this.sid) return;
+    this.clearEarlyNarration();      // a new thread invalidates any pending remainder
     this.started = true;
     this.pages = [];
     this.cursor = 0;
@@ -1008,6 +1025,7 @@ class DwellStore {
     this.branches = [];
     this.queued = null;               // any direct navigation clears a pending queue
     this.narrator.stop();             // silence the previous page when a new one begins
+    this.clearEarlyNarration();       // …and drop its unspoken remainder with it
     this.setStatus('…composing…');
     let idx = -1;
     try {
@@ -1104,6 +1122,7 @@ class DwellStore {
             this.applyText(page, head + p.text + tail);   // head/tail already clean → only the new middle is parsed
             this.cost = p.cost;
             if (this.narrate) {               // read the clarified passage back, then flow on
+              this.clearEarlyNarration();     // interrupting speak — drop any pending remainder
               this.narratingKey = page.key;
               this.setStatus('Clarified — reading it back ↓');
               void this.narrator.speak(page.text.slice(start), this.ttsVoice, this.ttsSpeed, start);
@@ -1303,6 +1322,7 @@ class DwellStore {
             this.setStatus('Re-pitched — read on ↓');
             if (wasNarrating) {                          // resume from ~the same sentence
               const start = frac > 0.02 ? sentenceStartNear(page.text, frac) : 0;
+              this.clearEarlyNarration();     // interrupting speak — drop any pending remainder
               this.narratingKey = page.key;
               void this.narrator.speak(page.text.slice(start), this.ttsVoice, this.ttsSpeed, start);
             }

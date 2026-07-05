@@ -96,12 +96,21 @@ the dish. It is the **core new primitive of Paths** and the CREED thesis at a ne
 *generate a path partly through imagination* is exactly this: on-manifold generation —
 the anchors are real, the connective synthesis is composed.)
 
-**This is substance, not plot — do not conflate them.** Global *plot* coherence (the
-causal throughline) the reader largely confabulates across cuts, so you needn't
-manufacture it (the dream-splicing finding — coherence is imposed by the observer). But
-*expository substance* — enough material, synthesized, to actually develop the idea — is
-load-bearing and **cannot be skipped**, because a single node rarely carries enough
-alone. The confluence frame supplies substance; the reader supplies plot.
+**This is substance, not plot — do not conflate them.** *Expository substance* — enough
+material, synthesized, to actually develop the idea — is load-bearing and **cannot be
+skipped**, because a single node rarely carries enough alone. The confluence frame
+supplies substance. Plot, we learned, the reader does **not** reliably confabulate: pages
+each restated the standing problem and nothing ever *happened*. So since 2026-07-04 the
+system supplies plot too — **THE PLOT**: one planning call at path commit turns the
+spine's gates into a through-line (a premise — a drive, a counter-pressure, what hangs on
+the outcome — plus ONE causally-chained turn per gate, mined from each gate's
+tension-bearing sections: relationships, story hooks, limitations, open questions).
+Narrative forms *enact* each turn ("write the scene in which X"); expository forms
+*arrive* at it ("carry the journey to its next development: X"). Landed turns accumulate
+as free story memory ("already happened"). The whole journey state rides the render
+prompt as one flat `<journey>` data block explicitly marked as **silent context** —
+never quoted, named, or summarized on the page (data without a silence contract gets
+narrated; see MERCURY_PROMPT_GUIDE's render-frame lessons).
 
 **How many confluence frames? A material-driven floor; tempo is the modulator above it.**
 - **Floor (material):** however many frames the exposition needs to carry the synthesis
@@ -511,11 +520,11 @@ gate now carries a DRAMATIC FUNCTION from a compressed story circle (three-act /
 hero's-journey shape) scaled to the spine length — ESTABLISH-THEN-DISRUPT (the ONLY page
 allowed to introduce the problem) → FIRST ENGAGEMENT (act on it, produce a RESULT) →
 THE TURN (the problem changes shape) → THE COMMITMENT (the key/price) → RESOLVE AND
-GROW. `PathNavigator._beat_job(j)` → `plan.beat` → a "THIS BEAT'S JOB" line on gates.
-Supporting rules: the ESTABLISHED sink is "already known — never re-explain, build on it
-and MOVE"; the mid-journey close now demands the page END CHANGED, leaving open the NEW
-question this page raised (never the original problem restated); tweens carry the
-CONSEQUENCE of what just happened. Form-neutral: for a tutorial the same circle reads as
-engage → misconception breaks → mastery. Verified live (Pythagoras story path):
-adjacent-page content overlap ~2%, every page ends on a different open question, events
-actually occur. Path cache re-keyed g2→g3.
+GROW. `PathNavigator._beat_job(j)` → `plan.beat`. *(Since 2026-07-04 the beat functions
+are the PLOTLESS FALLBACK only: THE PLOT plans one concrete turn per gate up front, and
+the turn IS the page's task — see "This is substance, not plot" above. The abstract
+beat shapes proved insufficient alone — a shape with no assigned content still renders
+as description.)* Tweens carry the CONSEQUENCE of what just happened. Form-neutral: for
+a tutorial the same circle reads as engage → misconception breaks → mastery. Verified
+live (nonfiction story path): adjacent-page content overlap ~2%, every page ends moved
+on, events actually occur. Path cache re-keyed g2→g3 (later g3→g4, the frame rebuild).
