@@ -1781,7 +1781,8 @@ itself (pages, sections, "as we saw", "earlier")?
 [ ] no sentence names the act of connecting ideas ("thread", "hinge", "bridge", "tie \
 together", "weave") — every relation stated directly instead?
 [ ] every sentence belongs to the work itself — none explains what the page is doing, \
-and no figure exists only to explain it?
+announces what later pages will hold, or steps outside the work to compare it to a \
+larger pattern — and no figure exists only to explain it?
 [ ] free of stock filler ("delve", "tapestry", "crucially", "it's worth noting", \
 "stands as a testament", "reminds us that")?
 [ ] every sentence complete and fully grammatical (articles and connectives intact), \
@@ -2891,7 +2892,13 @@ class Renderer:
                 _jlines.append(f"already happened: {plan.plot_done}")
             if plan.canon:
                 _jlines.append(f"established names (reuse, never rename): {plan.canon}")
-            path_frame = "<journey>\n" + "\n".join(_jlines) + "\n</journey>\n\n"
+            # The same silent-context convention as the recap block (which has never
+            # leaked): journey data is the water the page swims in, not content —
+            # without this mark, pages narrate it ("the question that drives this
+            # moment...", a closing tour of the route's future gates as foreshadowing).
+            path_frame = ("<journey> (silent context — the page lives inside this "
+                          "journey and never quotes, names, or summarizes it)\n"
+                          + "\n".join(_jlines) + "\n</journey>\n\n")
         guide = "; ".join(plan.headings[:4]) or plan.title
         # A confluence/bridge frame SYNTHESIZES across anchors; a normal frame retells one
         # node's material in facet order. (DWELL_PATHS.md — the confluence is the unit.)
