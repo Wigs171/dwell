@@ -175,6 +175,53 @@ def _voice_name(page_id: str) -> str:
     return page_id[len(pref):] if page_id.startswith(pref) else page_id
 
 
+# --- vault-shipped MOTIFS --------------------------------------------------
+# A vault may tag concept pages `motif` (a mood-index: "songs sharing the
+# jealousy feel"). Such pages stay navigable, but their (title, summary) is
+# ALSO harvested as the vault's mood palette for path stories — the runtime
+# motif layer uses them as data, never as required nodes (CREED: outputs must
+# not depend on per-output curation; vaults without motifs get the GEMS
+# fallback below).
+def _is_motif_page(page) -> bool:
+    tags = [str(t).lower() for t in (page.tags or [])]
+    return "motif" in tags
+
+
+def _motif_entry(page) -> tuple[str, str]:
+    """(name, concept-grain gloss) from a motif page — title sans the
+    '(motif)' marker; the gloss is the summary's dash-tail ("corpus blurb —
+    gloss"). A corpus reference is NOT a gloss ("songs sharing the youth
+    mood" would invite the render to talk about songs) — drop it and let the
+    bare name color the page instead."""
+    name = re.sub(r"\s*\(motif\)\s*$", "", page.title, flags=re.I).strip()
+    s = " ".join((page.summary or "").split())
+    m = re.search(r"[—–]\s*(.+)$", s)
+    gloss = (m.group(1) if m else s).strip().rstrip(".")
+    if len(gloss) < 15 or re.search(r"\b(songs?|tracks?|discography|pages?)\b",
+                                    gloss, re.I):
+        gloss = ""
+    return name, gloss[:160]
+
+
+# THE MOOD PALETTE fallback — GEMS (Geneva Emotional Music Scale), the standard
+# taxonomy of AESTHETIC emotion (what art evokes, not everyday feeling; Zentner
+# et al.). Nine motifs in three validated super-factors, which is the arc map:
+# rise ≈ vitality, fall/climax ≈ unease, resolution ≈ sublimity. Glosses are
+# concept-grain (THE LAW: a gloss colors; an example-list replicates). Only the
+# path's few CHOSEN motifs ever enter a prompt — never this table.
+_GEMS_MOTIFS: list[tuple[str, str, str]] = [
+    ("wonder", "struck by something larger and stranger than expected", "sublimity"),
+    ("transcendence", "the ordinary thins; something beyond it shows through", "sublimity"),
+    ("nostalgia", "the ache of a time or place that cannot be returned to", "sublimity"),
+    ("tenderness", "closeness held gently; care that lowers its voice", "sublimity"),
+    ("peacefulness", "stillness after motion; nothing needs defending", "sublimity"),
+    ("joyful activation", "bright forward energy; the body wants to move", "vitality"),
+    ("power", "force gathering; will pressing against the world", "vitality"),
+    ("tension", "a string tightening; something is about to give", "unease"),
+    ("sadness", "loss settling in; weight carried quietly", "unease"),
+]
+
+
 def _light_clean(text: str) -> str:
     """Strip wikilink/timestamp/cross-ref noise but keep structure (lines, bullets)."""
     text = _VOICE_LINK_RE.sub(lambda m: m.group(2) or m.group(1).replace("-", " "), text)
@@ -413,6 +460,7 @@ class Brain:
         self.embed_label: str = ""
         self.voice_profiles: dict[str, str] = {}   # vault-shipped narrator personas
         self.voice_default: str | None = None
+        self.motifs: list[tuple[str, str]] = []    # vault-shipped mood palette (name, gloss)
         # GHOSTS — wikilink targets with NO page anywhere in the vault: the frontier of
         # possibilities never explored (an open question in nonfiction, an unwritten
         # room in fiction). ghost id → the nodes that mention it.
@@ -440,6 +488,8 @@ class Brain:
             if _is_voice_page(page):
                 voice_pages.append(page)    # a narrator persona, not a destination
                 continue
+            if _is_motif_page(page):        # a mood-index page: harvest the palette
+                self.motifs.append(_motif_entry(page))   # ...but it STAYS navigable
             self.nodes[pid] = Node(
                 id=pid, title=page.title, summary=page.summary,
                 body=page.body, sources=list(page.sources or []),
@@ -657,6 +707,16 @@ class PagePlan:
     plot_done: str = ""       # PATH page: events already landed — consequences persist (else "")
     plot_cost: str = ""       # PATH gate: the lasting PRICE this gate's event exacts (else "")
     plot_state: str = ""      # PATH page: standing consequences of landed events (else "")
+    plot_kind: str = ""       # PATH page: which brief planned the through-line — "narrative" | "didactic"
+    protagonist: str = ""     # PATH page (story): the ONE held viewpoint the whole journey follows
+    cast: str = ""            # PATH page (story): the planner's named CAST — story-people canon on
+                              # every page, groundable even where the material never mentions them
+    mood: str = ""            # PATH page (story): this page's MOTIF, "name — gloss" — the emotional
+                              # color of the scene (planner-assigned from the path's small palette)
+    gate_weight: int = 1      # PATH gate: planner PAGE WEIGHT (1-3) — a weighted FINALE gets a fuller scene
+    journey: str = ""         # PATH page: the running one-line-per-page log of what pages DID
+                              # (excluded from key(): rolling memory — a re-render of the
+                              # same beat must still hit its cache; the log only feeds forward)
 
     @property
     def material(self) -> str:
@@ -683,6 +743,8 @@ class PagePlan:
             raw += f"|wp|{self.waypoint}"
         if self.canon:        # a page rendered under a different sink is a different page
             raw += "|c" + hashlib.sha1(self.canon.encode()).hexdigest()[:6]
+        if self.mood:         # a page colored by a different motif is a different page
+            raw += "|md" + hashlib.sha1(self.mood.encode()).hexdigest()[:6]
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -1077,6 +1139,7 @@ class PathNavigator(Navigator):
         self._corridor_waypoints: set = set()   # waypoint nodes already visited this corridor
         self._visited_waypoints: set = set()    # waypoints visited ANYWHERE on this path (no reruns)
         self._density_eff = self.tween_density  # per-corridor density (distance-aware)
+        self._corridor_wp: str | None = None    # this corridor's chosen side-encounter (or None)
         # CANON SINK (StreamDiffusion V2's sink tokens): established figures/elements,
         # first-seen order, pinned into every path page so the rolling tail/recap can't
         # rotate identities out of existence. Fed by observe_canon() after each render.
@@ -1123,6 +1186,21 @@ class PathNavigator(Navigator):
             return brain.centrality(n.id) * 0.001
         ents.sort(key=lambda n: -_affinity(n))
         cast = ", ".join(n.title for n in ents[:6])
+        # THE PROTAGONIST — one held viewpoint the whole story follows (narrative forms).
+        # The spine visits several figures, but a story STAYS WITH ONE and the others are
+        # MET. Without this the POV drifts — each gate's plot event names that gate's node
+        # as the actor, so every keyframe silently re-centers (the "camera gliding through
+        # a gallery" failure). The protagonist must be able to WANT, ACT, and TRAVEL — a
+        # PERSON, not a place, item, faction, or phenomenon. A large lore vault files all
+        # of those under kind="entity" (a city, a sword, and a warrior are all "entities"),
+        # so picking the top-affinity entity crowned a city (Stonehall) or a faction
+        # (Suicide-Mages) the hero. Prefer the highest-affinity PERSON-LIKE figure (the
+        # same _PERSONISH cue used to pick letter-writers — personal pronouns, roles like
+        # king/master/priest); fall back to the top entity only if the cast has no clear
+        # person. Empty only on a vault with no figures at all → old world-turn behaviour.
+        _people = [n for n in ents if self._PERSONISH.search(n.summary or "")]
+        self.protagonist = (_people[0].title if _people
+                            else (ents[0].title if ents else ""))
         # machine format — "tense|person|cast"; the RENDERER clamps to the active
         # form's legal space (_FORM_TELLING) and writes the human line
         self.telling_line = f"{tense}|{person}|{cast}"
@@ -1140,6 +1218,37 @@ class PathNavigator(Navigator):
         self.plot_premise: str = ""
         self.plot_events: list[str] = []
         self.plot_costs: list[str] = []   # per-gate PRICES — lasting marks that persist
+        # THE CAST — the story's own named people (planner-declared, mid/high dream).
+        # Why it exists: turns kept referencing UNNAMED story-figures ("her mentor",
+        # "the Riders") that appear in NO gate's material — the render can't ground a
+        # ghost reference, so it dropped exactly the dramatic half of the beat (the
+        # mentor's death) and staged only the half the material supports (Cael Morren
+        # p14 finding). Named here, carried on every page as canon story-data, they
+        # are as real to the render as the material's own figures.
+        self.plot_cast: str = ""          # "Name — role; Name — role" (else "")
+        # THE MOOD PALETTE — the path's few recurring motifs (home first), chosen
+        # ONCE per path: randomness picks the PALETTE, never the page (per-page
+        # random mood is whiplash — real stories run smooth, low-dimensional
+        # emotional arcs; Reagan et al. 2016). Vault-shipped `motif` pages win;
+        # GEMS is the universal fallback. The PLANNER distributes these across
+        # beats (constrained choice, same call), so mood follows the arc like a
+        # leitmotif: stated, countered at the fall/climax, returned changed.
+        self.mood_palette: list[tuple[str, str]] = self._pick_mood_palette()
+        self._mood_gloss: dict[str, str] = dict(self.mood_palette)
+        self.plot_moods: list[str] = []   # per-gate mood (planner-assigned; "" = none)
+        self.plot_weights: list[int] = []  # per-gate PAGE WEIGHT: how long to stay on this
+        #   node — 1 = pass through (one keyframe), 2 = linger (a second page), 3 = sit with
+        #   it (two more). The planner judges it from the node's role in the through-line
+        #   (a turning point / a core skill earns more than a connective step), so a rich
+        #   node stays longer and a thin one moves on — the material-driven dwell the
+        #   random _dwell_budget could never give. Drives _gate_dwell_target on the path.
+        self.plot_kind: str = ""          # which brief planned it: "narrative" | "didactic"
+        # THE JOURNEY LOG — one line per committed page (Renderer.digest_line), the
+        # running memory of what the pages ACTUALLY did. This is what lets page 6
+        # call back to page 2: tail is ~300 chars and plot_done is the planned
+        # outline, so without this log no page can reference an earlier page's
+        # concrete content. Rides the <journey> block as silent context.
+        self.journey_log: list[str] = []
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1214,11 +1323,34 @@ class PathNavigator(Navigator):
             lines.append(f"{k + 1}. {title}" + (f" — {gist}" if gist else "") + tag)
         return "\n".join(lines)
 
+    def _gate_pages(self, j: int) -> int:
+        """How many keyframe pages gate j earns — its planner PAGE WEIGHT (1 pass /
+        2 linger / 3 sit with it), clamped. 1 without a weighted plot (old behavior)."""
+        if self.plot_weights and 0 <= j < len(self.plot_weights):
+            return max(1, min(3, self.plot_weights[j]))
+        return 1
+
+    def _gate_dwell_target(self, j: int) -> int:
+        """Extra DWELL pages gate j earns beyond its keyframe: the planner weight
+        minus the keyframe itself, floored by the path-wide dwell_cap. This is the
+        material-driven dwell — a turning point / core skill lingers, a connective
+        node passes through — replacing the blind random _dwell_budget on paths.
+
+        The FINAL gate never dwells (returns dwell_cap only): its keyframe IS the
+        climax, and a dwell page AFTER a climax reads as a recap epilogue — the
+        inventory failure a real short story never commits. The approach INTO the
+        gate is the rising action; the ending is one strong final scene. A weighted
+        finale spends its weight on a FULLER scene (length), not extra pages."""
+        if j >= len(self.spine) - 1:
+            return self.dwell_cap
+        return max(self.dwell_cap, self._gate_pages(j) - 1)
+
     def _anchor_done(self) -> bool:
         """The current node is 'covered' for AUTO flow — either its facets are
-        exhausted or we've hit the per-node dwell cap (keeps a path brisk so the
+        exhausted or we've spent its earned dwell pages (keeps a path moving so the
         confluence + next gate arrive; the reader can still ↻ Dwell here via a branch)."""
-        return self.facet_cursor >= len(self._facets) or self._dwelt >= self.dwell_cap
+        return (self.facet_cursor >= len(self._facets)
+                or self._dwelt >= self._gate_dwell_target(self.i))
 
     @property
     def complete(self) -> bool:
@@ -1302,33 +1434,33 @@ class PathNavigator(Navigator):
         `_tween_cursor` sweeps it so each tween is a distinct, advancing slice."""
         key = (a, b)
         if self._pool_key != key:
-            rem = self._facets[self.facet_cursor:] if a == self.current else []
-            # Only b's BACK HALF: the gate page renders b's core (facet 0…) on arrival,
-            # so the approach must not spend it — tweens get the deep cuts, the beat
-            # keeps its payoff. (b's head in the pool = the gate re-reads tween content.)
+            # A CORRIDOR carries the reader FORWARD, so it is grounded in the DESTINATION,
+            # never in the departing node's leftovers. Those leftovers are `a`'s TAIL facets
+            # — the ones the beat (which takes facets front-first to a budget) didn't have
+            # room for, secondary by construction — and dumping them here made the transition
+            # read as "more of the last node" instead of motion toward the next. Content
+            # lives in the beats + dwells; the corridor is the APPROACH into b, so its pool
+            # is b's BACK HALF (the beat renders b's core/front — the two cover b once between
+            # them, and the beat keeps its payoff). Mid-run WAYPOINTS still supply real
+            # between-node material where the vault is large enough. A WEIGHTED b reserves
+            # its back half for its own dwell pages, so its corridor is waypoints + plot-
+            # motion only (its richness lives IN the node, not in the approach to it).
             fb = self.brain.nodes[b].facets()
-            self._pool = rem + fb[max(1, len(fb) // 2):]
-            # WILDCARD — serendipity injection: about half the corridors splice in ONE
-            # facet from elsewhere in the vault (off-spine, off-corridor), labeled as a
-            # side-current so the tween weaves it in briefly and returns to the motion.
-            others = [n for n in self.brain.ids
-                      if n not in (a, b) and n not in self._spine_index]
-            if others and len(self.brain.ids) > 8 and self.rng.random() < 0.5:
-                w = self.rng.choice(others)
-                wf = self.brain.nodes[w].facets()
-                if wf:
-                    wtitle = self.brain.nodes[w].title
-                    wild = (f"⟡ {wtitle}",
-                            f"⟡ a side-current from elsewhere in this world — "
-                            f"“{wtitle}” (weave one strand of it briefly into the "
-                            f"motion, then return):\n{wf[0][1]}")
-                    # early in the pool, or a short tween run never reaches it
-                    self._pool.insert(
-                        self.rng.randrange(max(1, len(self._pool) // 2)), wild)
+            _b_reserved = self._gate_pages(self._spine_index.get(b, -1)) >= 2
+            self._pool = [] if _b_reserved else fb[max(1, len(fb) // 2):]
             self._pool_key = key
             self._tween_cursor = 0
             self._corridor_waypoints = set()
             self._density_eff = self._corridor_density(a, b)
+            # A deliberate SIDE-ENCOUNTER for this corridor — a real off-spine node the
+            # protagonist meets en route, a little story inside the journey (this replaces
+            # the old RANDOM 'wildcard' splice, which read as a stranger wandering through).
+            # Rolled once per corridor for variety (not every road has a stop); when chosen,
+            # the corridor makes room for it (>= 2 frames: the detour, then the arrival).
+            self._corridor_wp = (self._corridor_waypoint(a, b)
+                                 if self.rng.random() < 0.6 else None)
+            if self._corridor_wp is not None:
+                self._density_eff = max(2, self._density_eff)
         return self._pool
 
     _PERSONISH = re.compile(r"\b(he|she|they|him|her|his|hers|their|who|whom|born|"
@@ -1365,83 +1497,246 @@ class PathNavigator(Navigator):
     _PLOT_SECTIONS = re.compile(
         r"relationship|story hook|conflict|history|open question|limitation"
         r"|key claim|criticis|controvers|benchmark|significance|why\b", re.I)
+    # The didactic sibling: a syllabus is mined from a page's TEACHABLE sections —
+    # what can be done, derived, applied — not its feuds and frictions.
+    _SKILL_SECTIONS = re.compile(
+        r"method|mechanism|how\b|works|procedure|step|example|definition"
+        r"|technique|process|practice|implementation|application|usage"
+        r"|approach|key claim|benchmark|component|structure", re.I)
+    # p19 — sections a LESSON page must not be fed. The planner already plans
+    # from teachable sections only, but the render was handed EVERY facet in the
+    # window — so tutorials taught "born in Hannover" biography no matter what
+    # the task said (data beats directives; three prompt-side attempts lost).
+    # A narrow BLOCKLIST of person-page furniture, not a whitelist: a history
+    # vault's tutorial may genuinely teach history.
+    _NONLESSON_SECTIONS = re.compile(
+        r"biograph|early life|personal life|later life|legacy|reception"
+        r"|relationship|feud|story hook|in popular|trivia|personality"
+        r"|apocrypha|anecdote", re.I)
 
-    def _gate_brief(self, node_id: str, cap: int = 420) -> str:
+    def _gate_brief(self, node_id: str, cap: int = 420,
+                    sections: "re.Pattern | None" = None) -> str:
         """One gate's PLOT-RELEVANT material for the planning call: its summary plus
         its tension-bearing sections — where a lore page keeps its feuds and stakes
         (relationships, story hooks) and a technical page keeps its friction
         (limitations, open questions, key claims, benchmarks). The ingest already
-        writes the tension down; this is where it becomes a through-line."""
+        writes the tension down; this is where it becomes a through-line. A didactic
+        plan passes _SKILL_SECTIONS instead — same mechanism, teachable material."""
         node = self.brain.nodes.get(node_id)
         if node is None:
             return ""
+        pat = sections or self._PLOT_SECTIONS
         parts = [" ".join((node.summary or "").split())]
         for h, m in node.facets():
-            if self._PLOT_SECTIONS.search(h or ""):
+            if pat.search(h or ""):
                 parts.append(" ".join(m.split()))
         return " ".join(p for p in parts if p)[:cap]
 
-    def plot_brief(self) -> tuple[str, str]:
+    def plot_brief(self, kind: str = "narrative", dream: float = 0.5) -> tuple[str, str]:
         """(sysmsg, usr) for THE PLOT planning call — the one moment the journey's
         through-line is decided (plan-then-write: an outline chosen up front,
-        because a per-page renderer provably cannot hold one it never saw). The
-        premise is deliberately WIDE — a drive and a counter-pressure, which are
-        people when the material has people and otherwise ideas, methods, limits
-        or anomalies (the history-of-ideas story: the method works until the
-        anomaly breaks it) — so a technical vault plans as honestly as a lore
-        vault. Rules sit LAST."""
+        because a per-page renderer provably cannot hold one it never saw). Two
+        briefs, one machinery: NARRATIVE plans a premise + causally-chained turns
+        with lasting prices; DIDACTIC (tutorial/guided/qa/brief) plans a syllabus —
+        a promise + one lesson per gate whose GAIN stacks into what the reader can
+        already do.
+
+        The narrative brief is banded by the CREATIVITY (dream) dial, which decides
+        whose story it is — a knob the reader already has:
+          • low (<0.34)  — a FACTUAL walk-through of the places/subjects in order, no
+            invented viewpoint (the render's own low-dream band keeps it grounded).
+          • mid (0.34–0.66) — follow a REAL figure the material already holds: the best
+            VIEWPOINT, not the most important force (a mighty demon or a sought-after
+            prize makes poor eyes — the Slyrak lesson).
+          • high (≥0.66) — INVENT a single viewpoint character (a traveler / witness) who
+            is present in EVERY chapter to experience it. This also fixes the structural
+            gap on a large vault, where no real figure appears in all the gates.
+        Rules sit LAST."""
+        if kind == "didactic":
+            gates = "\n".join(f"{k + 1}. {self.brain.nodes[nid].title} — "
+                              f"{self._gate_brief(nid, sections=self._SKILL_SECTIONS)}"
+                              for k, nid in enumerate(self.spine))
+            sysmsg = ("You plan the syllabus of a serialized lesson taught through "
+                      "the pages of a knowledge vault. Reply in EXACTLY this format, "
+                      "nothing else:\n"
+                      "PROMISE: <one sentence — the concrete thing the reader will "
+                      "be able to DO or genuinely EXPLAIN by the journey's end, at "
+                      "the height the material supports: promise a procedure only "
+                      "when the material actually holds one; on knowledge material, "
+                      "promise the ability to explain, recognize, or reason about it>\n"
+                      "1. <lesson> || gain: <what the reader can now do> || pages: <1-3>\n"
+                      "2. <lesson> || gain: <what the reader can now do> || pages: <1-3>\n"
+                      "(one numbered line per chapter, same count as the chapters given)")
+            usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
+                   + "\nThe chapters, in order, each with its page's material:\n"
+                   + gates
+                   + "\n\nWrite the PROMISE and one LESSON per chapter. A lesson is "
+                     "ONE move the reader works through — something they do, derive, "
+                     "apply, or learn to recognize — drawn from what that chapter's "
+                     "material actually shows; never a topic, never a summary, and "
+                     "never an exercise the material cannot support. Each lesson's "
+                     "GAIN is the ability it leaves behind, phrased as what the "
+                     "reader can now do. Gains STACK: each lesson stands on the "
+                     "gains before it and may use them freely, and the final lesson "
+                     "runs the whole promise end to end. PAGES is how long the reader "
+                     "should stay on this lesson: 1 for a quick move that lands in one "
+                     "reading, 2 when it needs a worked example then practice, 3 for a "
+                     "core skill the reader must sit with and drill — judge it by the "
+                     "material's depth and how much rests on it, and keep most at 1. "
+                     "Each line under 35 words plus its gain and pages.")
+            return sysmsg, usr
         cast = (self.telling_line.split("|", 2) + ["", "", ""])[2]
         gates = "\n".join(f"{k + 1}. {self.brain.nodes[nid].title} — "
                           f"{self._gate_brief(nid)}"
                           for k, nid in enumerate(self.spine))
-        sysmsg = ("You plan the through-line of a serialized journey told through "
-                  "the pages of a knowledge vault. Reply in EXACTLY this format, "
-                  "nothing else:\n"
-                  "PREMISE: <one sentence — a DRIVE (someone or something wants, "
-                  "asks, or attempts), the COUNTER-PRESSURE that resists it, and "
-                  "what hangs on the outcome>\n"
-                  "1. <turn> || price: <the lasting change it leaves>\n"
-                  "2. <turn> || price: <the lasting change it leaves>\n"
+        # LOW creativity → a FACTUAL walk-through: no invented viewpoint, the places and
+        # subjects narrated faithfully in order. (No PROTAGONIST line → ensure_plot clears
+        # the mechanical fallback, so the render skips the POV lock and tells it straight.)
+        if dream < 0.34:
+            sysmsg = ("You plan the through-line of a grounded, factual narration that "
+                      "moves through the pages of a knowledge vault in order. Reply in "
+                      "EXACTLY this format, nothing else:\n"
+                      "PREMISE: <ONE flowing sentence naming the thread that runs through "
+                      "these places or subjects — a plain sentence about what this journey "
+                      "covers, never a description of its shape>\n"
+                      "1. <development> || price: <what it leaves settled or changed> || pages: <1-3>\n"
+                      "2. <development> || price: <what it leaves settled or changed> || pages: <1-3>\n"
+                      "(one numbered line per chapter, same count as the chapters given)")
+            usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
+                   + "\nThe chapters, in order, each with its page's material:\n"
+                   + gates
+                   + "\n\nWrite the PREMISE and one DEVELOPMENT per chapter — what genuinely "
+                     "comes to pass or is shown at that stop, drawn faithfully from its "
+                     "material. No invented character and no drama beyond the record: narrate "
+                     "the places, subjects, and happenings as they are. Chain them: each "
+                     "development follows from the one before. Chapter k's development must "
+                     "come from chapter k's material. PAGES is how long to stay: 1 for a stop "
+                     "that lands in one reading, 2–3 for a rich one — keep most at 1. Each "
+                     "line under 35 words plus its price and pages.")
+            return sysmsg, usr
+        # MID/HIGH creativity → a PROTAGONIST story. The planner reads every gate, so it is
+        # far better placed than the mechanical picker to choose (mid) or invent (high) the
+        # viewpoint. All turn rules reference "the protagonist" generically → nothing pre-set.
+        if dream >= 0.66:
+            _pline = ("PROTAGONIST: <the name of a viewpoint character you INVENT to travel "
+                      "through and witness the whole journey — your own creation>")
+            _who = ("INVENT the PROTAGONIST: a single viewpoint character of your own making "
+                    "— a traveler, a witness, a seeker — who journeys through all these "
+                    "places and meets everyone in them. Name them, and keep them the SAME "
+                    "person from first page to last, present in EVERY chapter. The chapters "
+                    "may not obviously relate — that is the point; INVENT the narrative that "
+                    "binds them into one story, the reasons and bridges a dreaming mind or a "
+                    "good writer builds from any set of things. Each chapter's material is a "
+                    "canon element to weave in, not a limit on what may happen between them.")
+        else:
+            _pline = ("PROTAGONIST: <the figure whose eyes we follow the whole way — a person "
+                      "or acting agent the material already holds, never a place, an object, "
+                      "or a prize others seek>")
+            _who = ("choose the PROTAGONIST: a real figure the material already holds whom a "
+                    "reader can FOLLOW closely, whose eyes we see the journey through. A good "
+                    "viewpoint matters more than raw importance — a mighty force or a sought-"
+                    "after prize makes poor eyes. Prefer one who appears across the chapters.")
+        sysmsg = ("You plan the through-line of a serialized STORY told through the pages "
+                  "of a knowledge vault. FIRST decide whose eyes we follow, then plan it "
+                  "around them. Reply in EXACTLY this format, nothing else:\n"
+                  + _pline + "\n"
+                  "CAST: <the story's few other recurring people — 1 to 3, each as "
+                  "“Name — one-phrase role”, separated by “;”>\n"
+                  "PREMISE: <ONE flowing sentence naming the SPECIFIC thing the protagonist "
+                  "wants and the ONE central thing that most stands against it (a single "
+                  "opposition, never a roster of names), drawn from the material — a plain "
+                  "sentence about THIS story, never a description of the journey's shape or "
+                  "the kinds of figures in it>\n"
+                  "1. <turn> || mood: <one palette word> || price: <the lasting change it leaves> || pages: <1-3>\n"
+                  "2. <turn> || mood: <one palette word> || price: <the lasting change it leaves> || pages: <1-3>\n"
                   "(one numbered line per chapter, same count as the chapters given)")
+        # THE MOOD PALETTE — a leitmotif contract, not a menu: the few motifs
+        # recur (home stated → counter at the fall/climax → home returned,
+        # changed). One palette word per turn; the glosses teach the words.
+        _moodline = ""
+        if self.mood_palette:
+            _pal = "; ".join(f"{n} ({g})" if g else n for n, g in self.mood_palette)
+            _moodline = (
+                f"Give each turn a MOOD from this palette — the emotional color its "
+                f"scene is played in: {_pal}. The moods are few by design and RECUR "
+                f"like a musical theme: open in the first (the home mood), let the "
+                f"FALL and CLIMAX turn to the counter-mood, and return home, changed, "
+                f"at the end. One palette word per turn, exactly as given. ")
         usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
                + (f"Figures available: {cast}\n" if cast else "")
                + "\nThe chapters, in order, each with its page's material:\n"
                + gates
-               + "\n\nWrite the PREMISE and one TURN per chapter. A turn is "
-                 "something GIVING WAY — a discovery made, an attempt failing or "
-                 "succeeding, an assumption breaking, a question sharpening, a "
-                 "price paid, a resolution reached — never a topic, never a "
-                 "description. Each turn's PRICE is the lasting mark it leaves on "
-                 "a named figure or the world, drawn from what this material "
-                 "genuinely puts at stake. Prices PERSIST: every later chapter "
-                 "lives with them, and the best next turns grow out of them — a "
-                 "figure who has lost something must go on another way. A turn "
-                 "that costs something lasting beats a turn that merely reveals; "
-                 "let the counter-pressure land real blows, not only resist. The "
-                 "drive and the counter-pressure may be people; when the material "
-                 "has none they are just as well ideas, methods, limits or "
-                 "anomalies — use whatever the material genuinely offers, and "
-                 "name only what it names. Chain the turns: each caused by the "
-                 "one before, making the next possible. Chapter k's turn must be "
-                 "stageable with chapter k's material. The final turn resolves "
-                 "the premise. Each line under 35 words including its price.")
+               + "\n\nRead all the chapters, then " + _who + " Then name the CAST: the few "
+                 "other people this story keeps — each either a figure the material holds "
+                 "or one of your own making in the protagonist's life. Every person any "
+                 "turn involves must stand in the CAST or be the PROTAGONIST, and the "
+                 "turns use their NAMES — never an unnamed figure a page cannot ground. "
+                 + _moodline +
+                 "Then write the PREMISE and "
+                 "one TURN per chapter, each staged from the protagonist's side. Shape the "
+                 "chapters as ONE STORY ARC, not a row of equal beats. In order: the FIRST "
+                 "establishes — who the protagonist is, their world, and the want that drives "
+                 "them (it sets things moving, it costs them little); the EARLY-MIDDLE "
+                 "chapters RISE — they pursue the want through attempts, gains, and setbacks, "
+                 "meeting allies and obstacles, the stakes climbing but the price still light; "
+                 "a LATE chapter is the FALL — the low point, where an attempt fails or "
+                 "something is lost and the want seems beyond reach; the chapter at or just "
+                 "before the end is the CLIMAX, and THIS is where the real SACRIFICE lands — "
+                 "the protagonist gives up something essential to win or lose for good, earned "
+                 "by the fall before it; the LAST chapter resolves — the changed world, what "
+                 "it cost and what it gained. Every chapter is something the protagonist DOES "
+                 "under pressure (a pursuit, an attempt, a choice, a stand) that moves the "
+                 "story, and the protagonist is always IN it — but the KIND follows the arc "
+                 "above. The heavy, lasting PRICE belongs to the FALL and the CLIMAX; leave "
+                 "the price light or blank for the establishing and rising chapters — do NOT "
+                 "make every chapter a sacrifice. Prices that DO land persist — later chapters "
+                 "live with them. When the material offers "
+                 "no people, the thing met is an idea, a limit, or an anomaly — use what the "
+                 "material genuinely holds, and name only what it names. Chain the turns by "
+                 "cause AND motive: each grows from what the last one did to the protagonist "
+                 "— what just happened is the reason they act now; when the protagonist's "
+                 "standing toward someone or something shifts, the turn carries WHY it "
+                 "shifted, never an unexplained change of heart. Chapter k's turn must be "
+                 "stageable with chapter k's material. The final turn resolves the premise. PAGES is how "
+                 "long to stay in this chapter: 1 for a meeting that lands in one scene, 2 "
+                 "when it needs room, 3 for a turning point to dwell in — keep most at 1. "
+                 "Each line under 35 words plus its price and pages.")
         return sysmsg, usr
 
-    def adopt_plot(self, text: str) -> bool:
+    def adopt_plot(self, text: str, kind: str = "narrative") -> bool:
         """Parse the planning reply into premise + per-gate events + per-gate
-        PRICES (the lasting change each turn leaves — carried forward as standing
-        state so later pages deal with the fallout). Tolerant: stray prose is
-        ignored; a line without '|| price:' just has no cost; missing tail events
-        leave those gates event-free. Returns False — and the path stays
-        plotless — when no usable premise arrives."""
+        PRICES/GAINS (narrative: the lasting change each turn leaves; didactic:
+        the ability each lesson leaves — both carried forward as standing state
+        so later pages build on them) + per-gate PAGE WEIGHT (`|| pages: N`, how
+        long to stay on the node). Tolerant: stray prose is ignored; a line
+        without '|| price:'/'|| gain:' just has no cost; no '|| pages:' defaults
+        to 1. Returns False — and the path stays plotless — when no usable
+        premise arrives."""
         if not text:
             return False
         premise = ""
+        protagonist = ""
+        cast = ""
         events = [""] * len(self.spine)
         costs = [""] * len(self.spine)
+        weights = [1] * len(self.spine)
+        moods = [""] * len(self.spine)
         for line in text.splitlines():
             line = line.strip()
-            m = re.match(r"(?i)premise\s*:\s*(.+)", line)
+            m = re.match(r"(?i)protagonist\s*:\s*(.+)", line)
+            if m:
+                p = m.group(1).strip().strip("*").strip()
+                # ignore a non-answer; a real name overrides the mechanical fallback
+                if p and p.lower() not in ("none", "n/a", "-", "unknown"):
+                    protagonist = p.split(" — ")[0].split(",")[0].strip()[:60]
+                continue
+            m = re.match(r"(?i)cast\s*:\s*(.+)", line)
+            if m:
+                c = m.group(1).strip().strip("*").strip()
+                if c and c.lower() not in ("none", "n/a", "-"):
+                    cast = c[:300]
+                continue
+            m = re.match(r"(?i)(?:premise|promise)\s*:\s*(.+)", line)
             if m:
                 premise = m.group(1).strip()
                 continue
@@ -1450,61 +1745,166 @@ class PathNavigator(Navigator):
                 k = int(m.group(1)) - 1
                 if 0 <= k < len(events):
                     body = m.group(2).strip()
-                    parts = re.split(r"\s*\|\|\s*price\s*:\s*", body, maxsplit=1,
-                                     flags=re.I)
+                    # pull the page weight off first, then the mood, then split
+                    # turn / price|gain (else the price field would swallow the
+                    # trailing '|| pages: N' / '|| mood: X')
+                    mp = re.search(r"\|\|\s*pages?\s*:\s*(\d+)", body, re.I)
+                    if mp:
+                        weights[k] = max(1, min(3, int(mp.group(1))))
+                        body = (body[:mp.start()] + body[mp.end():]).strip()
+                    mm = re.search(r"\|\|\s*mood\s*:\s*([^|]+?)\s*(?=\|\||$)", body, re.I)
+                    if mm:
+                        # canonicalize to a palette entry; an off-palette word is
+                        # dropped (no mood beats a rogue one — the palette IS the
+                        # coherence contract)
+                        _mw = mm.group(1).strip().strip(".").lower()
+                        for _pn, _pg in self.mood_palette:
+                            if _pn.lower() == _mw or _pn.lower() in _mw:
+                                moods[k] = _pn
+                                break
+                        body = (body[:mm.start()] + body[mm.end():]).strip()
+                    parts = re.split(r"\s*\|\|\s*(?:price|gain)\s*:\s*", body,
+                                     maxsplit=1, flags=re.I)
                     events[k] = parts[0].strip()
                     if len(parts) > 1:
                         costs[k] = parts[1].strip().rstrip(".")
         if not premise or not any(events):
             return False
+        # A PLOTTED path must never walk goal-less: the ENTIRE narrative frame —
+        # journey block, POV lock, cast, plot-event task, arc positions — keys off
+        # plan.goal, so an embedder that plans a plot but passes goal="" silently
+        # renders every page with no plot attached (the frame just doesn't fire;
+        # found 2026-07-06 when the test harness did exactly that and weeks of
+        # "the render ignores the plan" was really "the render never saw it").
+        # The premise IS the journey's goal; adopt it when none was given.
+        if not self.goal:
+            self.goal = premise[:220]
         self.plot_premise = premise
         self.plot_events = events
         self.plot_costs = costs
+        self.plot_weights = weights
+        self.plot_kind = kind
+        if protagonist and kind == "narrative":   # the planner's pick beats the heuristic
+            self.protagonist = protagonist
+        if kind == "narrative":                   # the story's own named people + moods
+            self.plot_cast = cast
+            self.plot_moods = moods
         return True
 
-    def ensure_plot(self, complete) -> bool:
+    def ensure_plot(self, complete, kind: str = "narrative",
+                    dream: float = 0.5) -> bool:
         """Generate THE PLOT once, via `complete(sysmsg, usr) -> str` (the caller
-        wraps its own LLM client — the navigator stays client-free). Idempotent;
-        any failure leaves the path plotless and pages fall back to
-        beat-function-only behavior."""
-        if self.plot_premise or len(self.spine) < 2:
-            return bool(self.plot_premise)
-        try:
-            sysmsg, usr = self.plot_brief()
-            return self.adopt_plot(complete(sysmsg, usr) or "")
-        except Exception:
+        wraps its own LLM client — the navigator stays client-free). `dream` is the
+        creativity dial at path start; it bands the narrative brief (factual tour /
+        follow a real figure / invent a witness). Idempotent while the KIND matches;
+        a form switch across the narrative/didactic boundary replans. Any failure
+        keeps whatever plot exists; a plotless path falls back to beat-function-only
+        behavior."""
+        if len(self.spine) < 2:
             return False
-
-    def _pick_waypoint(self, a: str, b: str, k: int) -> str | None:
-        """A real vault node lying BETWEEN the gates in embedding space, nearest to the
-        interpolated point at this tween's position — the StreamDiffusion metaphor taken
-        literally: the corridor passes THROUGH intermediate keyframes instead of
-        re-blending the same two endpoints. Scale-invariant by construction: when
-        nothing genuinely lies between (every candidate is spine/visited/unrelated) it
-        returns None and the caller falls back to the endpoint blend — so a vault small
-        enough to warrant one tween simply gets the blend, with no special-casing."""
-        sp = self.brain.space
-        if sp is None:                           # no embedding space → can't interpolate
-            return None
-        t = k / self._density_eff
+        if self.plot_premise and self.plot_kind == kind:
+            return True
         try:
-            v = sp.blend(sp.vec(a), sp.vec(b), t)
+            sysmsg, usr = self.plot_brief(kind, dream)
+            if self.adopt_plot(complete(sysmsg, usr) or "", kind):
+                # LOW-creativity narrative is a factual tour — no viewpoint character;
+                # drop the mechanical fallback so the render tells it straight.
+                if kind == "narrative" and dream < 0.34:
+                    self.protagonist = ""
+                return True
+        except Exception:
+            pass
+        return bool(self.plot_premise)
+
+    def _page_protagonist(self) -> str:
+        """The protagonist a PAGE should carry. A didactic path carries NONE —
+        the mechanical fallback (e.g. 'Terrorblade') was riding tutorial pages
+        and arming the render's write-their-story machinery, which injected
+        narrative scenes into lessons on EVERY vault (the stays_on_promise=0.33
+        disease: Greenberg 'walking through the lab' on procedure-rich material).
+        Form-level and vault-neutral: the reader is a tutorial's only person."""
+        return "" if self.plot_kind == "didactic" else self.protagonist
+
+    def _mood_for(self, j: int | None) -> str:
+        """The page's motif line ("name — gloss") for gate/corridor index j."""
+        k = j if j is not None else self.i
+        if not (self.plot_moods and 0 <= k < len(self.plot_moods)):
+            return ""
+        name = self.plot_moods[k]
+        if not name:
+            return ""
+        gloss = self._mood_gloss.get(name, "")
+        return f"{name} — {gloss}" if gloss else name
+
+    def _pick_mood_palette(self) -> list[tuple[str, str]]:
+        """The path's recurring motifs: HOME first, then 1-2 counters. Vault-
+        shipped `motif` pages (>=2 of them) are the palette when present; else
+        GEMS, where the super-factors do the arc-shaping — home from the bright
+        poles (vitality/sublimity), the counter from unease so the fall and
+        climax have a mood to reach for. Seeded rng → deterministic per path,
+        different across paths."""
+        try:
+            vaultp = [(n, g) for n, g in getattr(self.brain, "motifs", []) or [] if n]
+            if len(vaultp) >= 2:
+                k = 3 if (len(vaultp) >= 3 and self.rng.random() < 0.6) else 2
+                return self.rng.sample(vaultp, k)
+            unease = [(n, g) for n, g, grp in _GEMS_MOTIFS if grp == "unease"]
+            bright = [(n, g) for n, g, grp in _GEMS_MOTIFS if grp != "unease"]
+            pal = [self.rng.choice(bright), self.rng.choice(unease)]
+            if self.rng.random() < 0.5:
+                pal.append(self.rng.choice([m for m in bright if m[0] != pal[0][0]]))
+            return pal
+        except Exception:
+            return []
+
+    def add_digest(self, line: str) -> None:
+        """Append one line to THE JOURNEY LOG (what the just-committed page
+        actually did). Bounded — paths are short, but a long dwell-heavy run
+        shouldn't grow the prompt without limit."""
+        line = " ".join((line or "").split())
+        if line:
+            self.journey_log.append(line[:220])
+            del self.journey_log[:-16]
+
+    def _corridor_waypoint(self, a: str, b: str) -> str | None:
+        """A deliberate SIDE-ENCOUNTER for the corridor a→b: a real vault node the
+        protagonist can plausibly MEET on the way — a little story inside the journey.
+        The old picker took the node NEAREST the a↔b midpoint, which for the neighbour-
+        walk spine's close gates was just a sibling in the same cluster (it read as more
+        of the same, not a detour), and it only fired behind the density guard so on most
+        corridors it never ran at all. This picks for the two qualities that make a real
+        detour: RELATED enough to the journey to belong, DISTINCT enough from both gates
+        to be its own moment — and prefers a figure (an entity) over a bare concept,
+        because a person met makes a scene. Returns None when nothing off-the-line
+        genuinely relates (then the corridor is plain motion)."""
+        sp = self.brain.space
+        if sp is None:
+            return None
+        try:
+            va, vb = sp.vec(a), sp.vec(b)
+            mid = sp.blend(va, vb, 0.5)
         except Exception:
             return None
-        used = set(self.spine) | self._corridor_waypoints | self._visited_waypoints
-        used.update((a, b, self.came_from or ""))
-        best, best_c = None, 0.2                 # floor: a waypoint must genuinely relate
+        used = set(self.spine) | self._visited_waypoints | {a, b, self.came_from or ""}
+        best, best_s = None, 0.0
         for cid in self.brain.ids:
             if cid in used:
                 continue
             if self.history and self.history.seen_count(cid) > 2:
-                continue                          # over-familiar pages make stale waypoints
+                continue                          # over-familiar pages make stale detours
             try:
-                c = sp.cos(v, sp.vec(cid))
+                vc = sp.vec(cid)
+                rel = sp.cos(mid, vc)             # belongs to the journey's neighbourhood
             except Exception:
                 continue
-            if c > best_c:
-                best_c, best = c, cid
+            if rel < 0.15:                        # unrelated → a stranger, not a detour
+                continue
+            distinct = 1.0 - max(sp.cos(va, vc), sp.cos(vb, vc))   # not a sibling of a/b
+            score = rel * (0.4 + distinct)
+            if self.brain.nodes[cid].kind == "entity":
+                score *= 1.3                      # a figure met makes a better scene
+            if score > best_s:
+                best_s, best = score, cid
         return best
 
     def _plan_tween_waypoint(self, a: str, b: str, wp: str, k: int) -> "PagePlan":
@@ -1527,6 +1927,10 @@ class PathNavigator(Navigator):
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings), waypoint=wp,
             telling=self.telling_line, correspondents=self.correspondents_line,
+            protagonist=self._page_protagonist(),   # the detour stays in their eyes
+            cast=self.plot_cast,                # ...with the story's people still real
+            mood=self._mood_for(self.i),        # ...under the departing beat's color
+            journey="; ".join(self.journey_log[-12:]),   # ...and the carry-forward context
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
                 e for e in self.plot_events[:self.i + 1] if e),
@@ -1542,29 +1946,36 @@ class PathNavigator(Navigator):
         if not (self.confluence and self.i + 1 < len(self.spine)):
             return None
         nxt = self.spine[self.i + 1]
-        pool = self._tween_pool(self.current, nxt)       # also fixes _density_eff
+        pool = self._tween_pool(self.current, nxt)       # also fixes _density_eff + _corridor_wp
         if self._tween_k >= self._density_eff:
             return None
         k = self._tween_k + 1
-        if k < self._density_eff:                        # mid-run → visit somewhere new
-            wp = self._pick_waypoint(self.current, nxt, k)
-            if wp is not None:
-                return self._plan_tween_waypoint(self.current, nxt, wp, k)
-        if self._tween_cursor < len(pool):               # arrival (or waypointless fallback)
+        # The chosen SIDE-ENCOUNTER comes FIRST (the detour off the road), then the
+        # arrival blend carries the protagonist on to the gate. Decoupled from density:
+        # if a waypoint was chosen for this corridor, density was already bumped to make
+        # room, so it fires reliably instead of being starved by the old `k < density` guard.
+        if k == 1 and self._corridor_wp is not None:
+            return self._plan_tween_waypoint(self.current, nxt, self._corridor_wp, k)
+        if self._tween_cursor < len(pool):               # the arrival into the gate
             return self._plan_tween(self.current, nxt, self._tween_cursor, k)
         return None
 
     def plan_auto(self) -> "PagePlan | None":
-        # After the KEYFRAME beat, run the corridor: waypoint tweens (a mini-journey
-        # through nodes BETWEEN the gates) then the arrival blend; then the next gate.
+        # LINGER on a weighted gate first: a turning point / core skill earns extra
+        # keyframe pages on its OWN material (the planner's PAGE WEIGHT) before the
+        # journey moves on — this is where a rich node "stays longer". Bounded by
+        # its facets; a thin node (weight 1) skips straight past. Applies to EVERY
+        # gate, not just the last (the old code only dwelt the final keyframe).
+        if (self._dwelt < self._gate_dwell_target(self.i)
+                and self.facet_cursor < len(self._facets)):
+            return self._plan_at("dwell", self.current, self.facet_cursor)
+        # Then run the corridor: waypoint tweens (a mini-journey through nodes BETWEEN
+        # the gates) then the arrival blend; then the next gate.
         if self.i + 1 < len(self.spine):
             p = self._next_corridor_plan()
             if p is not None:
                 return p
             return self._plan_at("move", self.spine[self.i + 1], 0)   # arrive at the gate
-        # last keyframe: dwell any remaining facets (dwell_cap), else done
-        if self.facet_cursor < len(self._facets) and self._dwelt < self.dwell_cap:
-            return self._plan_at("dwell", self.current, self.facet_cursor)
         return None
 
     def _plan_tween(self, a: str, b: str, start: int, k: int) -> "PagePlan":
@@ -1581,13 +1992,21 @@ class PathNavigator(Navigator):
         return PagePlan(
             mode="bridge", node=a, title=f"{ta} → {tb}",
             facet_start=start, take=take, headings=[ta, tb],
-            chunks=[f"— continuing “{ta}”, in motion toward “{tb}” —", *chunks],
+            chunks=[f"— the approach to “{tb}”, “{ta}” now behind — its ground "
+                    f"coming into view:", *chunks],
             came_from=self.came_from, steer_bucket=self.steer_bucket(),
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
             arc_outline=self._outline(self.i), canon="; ".join(self.canon),
             avoid_openings=" / ".join(self.recent_openings),
             telling=self.telling_line, correspondents=self.correspondents_line,
+            # the road stays the protagonist's too — without these the endpoint
+            # tweens dropped the POV lock and the story's people, and bridge pages
+            # drifted into anonymous vignettes about bystanders (Cael p14: a whole
+            # tween page about "Joren", the protagonist absent).
+            protagonist=self._page_protagonist(), cast=self.plot_cast,
+            mood=self._mood_for(self.i),
+            journey="; ".join(self.journey_log[-12:]),
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
                 e for e in self.plot_events[:self.i + 1] if e),
@@ -1599,11 +2018,23 @@ class PathNavigator(Navigator):
         # read as a connected journey, not isolated articles): the goal it serves, its
         # position in the arc, and the next gate to lean toward. render() uses these.
         plan = super()._plan_at(mode, node, start)
+        # DIDACTIC MATERIAL FILTER (p19) — drop non-lesson facets from the page
+        # feed AFTER assembly (cursor math over the unfiltered list stays intact;
+        # only the delivered material shrinks). Keep at least one facet so a
+        # furniture-only window still renders something.
+        if (self.plot_kind == "didactic" and len(plan.chunks) > 1
+                and len(plan.headings) == len(plan.chunks)):
+            keep = [(h, c) for h, c in zip(plan.headings, plan.chunks)
+                    if not self._NONLESSON_SECTIONS.search(h or "")]
+            if keep and len(keep) < len(plan.chunks):
+                plan.headings = [h for h, _ in keep]
+                plan.chunks = [c for _, c in keep]
         plan.goal = self.goal
         j = self._spine_index.get(node)
         if j is not None:                        # a gate (spine anchor)
             plan.arc = f"{j + 1} of {len(self.spine)}"
             plan.beat = self._beat_job(j)        # its dramatic job in the story circle
+            plan.gate_weight = self._gate_pages(j)   # a weighted finale → a fuller scene
             plan.toward = (self.brain.nodes[self.spine[j + 1]].title
                            if j + 1 < len(self.spine) else "")
         else:                                    # a corridor node (off-spine drift)
@@ -1621,20 +2052,34 @@ class PathNavigator(Navigator):
         plan.telling = self.telling_line        # the committed tense/person/cast
         plan.correspondents = self.correspondents_line   # epistolary letter-writers
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
+        plan.journey = "; ".join(self.journey_log[-12:])   # what pages ACTUALLY did
+        plan.protagonist = self._page_protagonist()   # held viewpoint (never didactic)
         if self.plot_premise:                   # THE PLOT rides every path page:
             plan.plot = self.plot_premise       # premise everywhere; the gate's own
-            _done = j if j is not None else self.i + 1   # event only ON the gate
+            plan.plot_kind = self.plot_kind
+            plan.cast = self.plot_cast          # the story's people, canon on every page
+            plan.mood = self._mood_for(j)       # this beat's motif colors its pages
+            # A DWELL page is a SECOND page on a gate the keyframe already staged — its
+            # event has HAPPENED, so it rides "already happened" (count it done) and the
+            # page deepens the node instead of re-staging the turn. Only the keyframe
+            # (open/move) springs the event.
+            _staged = j is not None and mode in ("open", "move")
+            _done = (j + 1 if (j is not None and mode == "dwell") else j) \
+                if j is not None else self.i + 1
             plan.plot_done = "; ".join(e for e in self.plot_events[:_done] if e)
             plan.plot_state = "; ".join(c for c in self.plot_costs[:_done] if c)
-            if j is not None and j < len(self.plot_events):
+            if _staged and j < len(self.plot_events):
                 plan.plot_event = self.plot_events[j]
                 if j < len(self.plot_costs):
                     plan.plot_cost = self.plot_costs[j]
-        # Arriving at the gate the corridor tween'd toward: the approach spent the node's
-        # BACK half, so the beat renders only the FRONT half — corridor + beat cover the
-        # node once between them, and the arrival never re-reads tween material.
-        if (self._pool_key and node == self._pool_key[1] and self._tween_cursor > 0
-                and plan.facet_start == 0):
+        # Arriving at a gate, render only its FRONT half when its back half is spoken for:
+        # either the corridor tween'd toward it and spent the back half (corridor + beat
+        # cover the node once between them, so the arrival never re-reads tween material),
+        # OR this is a WEIGHTED gate reserving its back half for the dwell pages it earned.
+        _aw = mode == "move" and j is not None and self._gate_pages(j) >= 2
+        _corridor_spent = (self._pool_key and node == self._pool_key[1]
+                           and self._tween_cursor > 0)
+        if plan.facet_start == 0 and (_corridor_spent or _aw):
             boundary = max(1, len(self.brain.nodes[node].facets()) // 2)
             if plan.take > boundary:
                 plan.take = boundary
@@ -1733,9 +2178,13 @@ class PathNavigator(Navigator):
         if plan.mode in ("move", "open"):
             # If the corridor's tweens spent this node's back half, the node is now fully
             # covered (front on the beat, back on the approach) — mark it read so dwell
-            # doesn't re-serve tween material and the NEXT corridor's pool skips it.
+            # doesn't re-serve tween material and the NEXT corridor's pool skips it. But a
+            # WEIGHTED gate reserved its back half from the corridor (see _tween_pool), so
+            # it keeps those facets for the dwell pages it earned — never mark it read here.
+            _cw = (self._spine_index.get(plan.node) is not None
+                   and self._gate_pages(self._spine_index[plan.node]) >= 2)
             if (self._pool_key and plan.node == self._pool_key[1]
-                    and self._tween_cursor > 0):
+                    and self._tween_cursor > 0 and not _cw):
                 self.facet_cursor = len(self._facets)
             self._dwelt = 0                     # fresh keyframe → reset dwell + tween counters
             self._tween_k = 0
@@ -1765,11 +2214,15 @@ a book being written straight through, page after page, for a listener who hears
 word. To that listener there are no pages, no sections, no "earlier" — only your voice, \
 still talking.
 
-Write ONE page — about {n} words, {shape} Open mid-stride, carrying straight on from what \
+Write ONE page — as long as THIS material genuinely warrants and no longer, up to about {n} \
+words. Take only what is worth developing here: when there is little that moves things forward, \
+a short page is right; when the material is rich, use the room. Never pad, restate, or \
+re-describe to reach a length. {shape} Open mid-stride, carrying straight on from what \
 came just before without repeating any of it; develop the material; land the close on this \
 page's own terms. Spoken prose, written for the ear. Light markup only, and sparingly: \
 **bold** for a truly key term, *italics* for a work's title or gentle stress, an occasional \
-"## " heading where the form suits it (an article or guided tour — never dialogue, Q&A, or a story); \
+"## " heading where the form suits it (an article or guided tour — never dialogue, Q&A, \
+a story, or a tutorial: a lesson flows, it doesn't section itself); \
 plain line breaks between beats or turns are fine. No lists, links, tables, blockquotes, \
 or code."""
 
@@ -1779,7 +2232,65 @@ or code."""
 # artifacts diffusion sometimes leaves (the garbled-sentence failure mode we saw).
 # Bumped whenever the render PROMPT is overhauled — folded into cache_key so the
 # persistent tween cache never replays pages written under a retired prompt style.
-_PROMPT_V = "p2"
+_PROMPT_V = "p21"  # p3 = didactic plot kind + journey log + example-on-first-beat-only;
+#                    p21 = DIDACTIC CORRIDORS — bridge/waypoint tasks were story-shaped for
+#                          all forms; after p20 emptied the tutorial protagonist their
+#                          fallback invented "the traveler" as a character (artc page-4
+#                          vignette; dota's Earth Spirit waypoint scene). Tutorial bridges
+#                          are now lesson hand-offs/asides: reader-addressed, no figures
+#                    p20 = DIDACTIC REGISTER FIREWALL — the root of stays_on_promise=0.33:
+#                          didactic paths kept the mechanical protagonist fallback, and the
+#                          un-form-gated dream directive commanded every tutorial page to
+#                          "write {prot}'s story… put them into this scene" (Terrorblade
+#                          in canyons, Greenberg walking labs — on ANY vault). Fixed at the
+#                          SOURCE (didactic pages carry no protagonist) + didactic gets its
+#                          own creativity semantics (teaching instruments, reader-only page)
+#                    p18 = didactic MATERIAL CONTRACT (lesson's SOURCE to select from, not a
+#                          stage — tutorials had inherited the story's setting/props clause)
+#                          + SYLLABUS LOCK journey line (the promise holds pages like a POV
+#                          lock, to the last page — fixes stays_on_promise=0 digressions/drift)
+#                    p19 = DIDACTIC MATERIAL FILTER — non-lesson facets (biography/legacy/feud
+#                          furniture) dropped from the page FEED for didactic paths; p17/p18
+#                          prompt rules kept losing to 2200 chars of biography in the material
+#                          (data beats directives — the render can't ignore what it's handed)
+#                    p4 = soften one-sentence-per-line drift + premise-as-flowing-sentence;
+#                    p5 = page length is a CEILING, not a target (stop early on thin material,
+#                         no padding) — A/B-proven to kill scenery-reiteration on dota story;
+#                    p6 = corridors drop the departing node's leftovers — the approach is
+#                         grounded in the DESTINATION + plot motion, not "more of the last node";
+#                    p7 = story PROTAGONIST lock — one held POV; keyframes are figures the
+#                         protagonist MEETS; plot planned protagonist-centred so no gate re-centres;
+#                    p8 = deliberate WAYPOINT side-encounters (replace random wildcard) fired
+#                         reliably; finale never dwells into a recap (fuller final scene instead);
+#                    p9 = the PLANNER picks the protagonist (reads every gate → the recurring
+#                         AGENT, e.g. Davion not Slyrak) instead of the entity+regex heuristic;
+#                    p10 = ESTABLISH the protagonist (open beat) + INTRODUCE each figure as met
+#                          (no stranger at the end) + planner chains turns by MOTIVE not sequence;
+#                    p11 = the writer's job is to CONNECT — the dial governs how boldly it invents
+#                          the bridges/presence between a DIVERSE spine's nodes (dream-logic at high);
+#                    p12 = AGENCY + STAKES — turns are CHOICES under pressure (not relics found);
+#                          scenes FORCE the next; costs SPENT on the page; finale LANDS the premise;
+#                    p13 = STORY ARC — beats get position functions (establish/rise/FALL/climax/
+#                          resolve); the SACRIFICE + heavy price belong to the climax, not every page;
+#                    p14 = RENDER EXECUTES THE PLAN — enacted+protagonist pages flip polarity: the
+#                          EVENT happening IS the page, material is only the physical stage; at a
+#                          priced beat (fall/climax) the conflict must LAND, not resolve into
+#                          cooperation/observation (fixes Cael Morren: Eira cooperated w/ Brine,
+#                          no sacrifice). Gated on protagonist → low-dream factual tour unchanged.
+#                          (NOTE: string was stuck at "p6" through p7–p13; bumped straight to p14.)
+#                    p15 = THE NAMED CAST — the planner declares the story's few people by name
+#                          (no ghost references: "her mentor" became undroppable only when named);
+#                          cast rides every page as canon story-data; endpoint tweens now carry
+#                          protagonist+cast+journey too (they'd been drifting into bystander vignettes)
+#                    p16 = MOTIFS — a per-path mood palette (vault `motif` pages, else GEMS) chosen
+#                          once (random picks the PALETTE, never the page); the planner assigns each
+#                          beat's mood as a leitmotif (home → counter at fall/climax → home changed);
+#                          one "mood, felt never named" line rides each enacted page
+#                    p17 = sweep-driven fixes: didactic GROUNDED TEACHING (promise at the height the
+#                          material supports — explain/recognize on knowledge material; render cuts
+#                          busywork steps, "explaining well beats inventing a task") + story POV lock
+#                          demands the protagonist NAMED on the page (pronoun-only viewpoints
+#                          dissolved on expository vaults — prot_presence 0.0 on 5/12 sweep stories)
 
 # The anti-slop core — reused by BOTH the page render and the in-place expand/simplify
 # rework, so every piece of generated prose obeys the same no-AI-tells rules.
@@ -2102,7 +2613,9 @@ FORMS = {
         "it — applying the idea, deriving the result, recognizing the pattern in a new case. "
         "The practice always works ON the material itself (list, reconstruct, derive, or "
         "apply ITS content) — never a generic self-improvement exercise about the reader's "
-        "own life, and never invented busywork."
+        "own life, and never invented busywork. Continuous flowing prose spoken to the "
+        "reader — a lesson talks its way through the work; it never breaks into headings, "
+        "section titles, or numbered lists."
     ),
     "brief": (
         "as a decision-ready BRIEF — bottom line up front. The FIRST sentence states the single "
@@ -2304,6 +2817,18 @@ _CAST_FORMS = ("story", "case", "epistolary", "interview", "debate")
 # through-line (turns arrived at, not performed).
 _PLOT_ENACTED = ("story", "case", "epistolary")
 
+# Forms whose through-line is a SYLLABUS, not a story: THE PLOT plans a promise +
+# one lesson per gate with a stacking GAIN ("the reader can now …") instead of a
+# premise + turns with lasting prices. The kind is decided at planning time from
+# the active form; a mid-path switch across this boundary replans (ensure_plot).
+_DIDACTIC_FORMS = ("tutorial", "guided", "qa", "brief")
+
+
+def plot_kind_for(form: str) -> str:
+    """Which planning brief a form wants — the server/harness pass this to
+    PathNavigator.ensure_plot so the outline's KIND matches the form's job."""
+    return "didactic" if form in _DIDACTIC_FORMS else "narrative"
+
 
 def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
     """One compact DATA line naming the form's people-roles — rides the <journey>
@@ -2326,10 +2851,10 @@ def _cast_directive(form: str, leads_str: str, cast_full: str) -> str:
     if form == "interview":
         return f"interviewee: {leads[0]} — every answer in {names[0]}'s own voice"
     if form == "story":
-        line = f"point of view: {names[0]}"
-        if cast_full:
-            line += f"; figures who may appear and speak in quotes: {cast_full}"
-        return line
+        # POV is owned by the protagonist lock in the journey block now; here we only
+        # name the OTHER figures the protagonist may meet and who may speak in quotes.
+        return (f"figures who may appear and speak in quotes: {cast_full}"
+                if cast_full else "")
     if form == "case":
         return "lived by: " + "; ".join(leads) + " — acting in character, by name"
     return ""
@@ -2408,7 +2933,8 @@ _FORM_TWEEN = {
     "tutorial": (
         "as a short hand-off between steps, in flowing second-person prose: what the reader "
         "can now do, carried straight into what that ability opens next — momentum between "
-        "lessons, never a new lesson and never a numbered step."
+        "lessons, never a new lesson, never a numbered step, and never a heading or section "
+        "title of any kind."
     ),
     "brief": (
         "as ONE short front-loaded paragraph handing off: the point just settled, and the "
@@ -2645,9 +3171,39 @@ def _strip_tail_echo(page: str, tail: str) -> str:
         suffix = nt[-len(np):]                    # the echo aligns to the END of the tail
         if not suffix:
             continue
-        if nt.endswith(np) or SequenceMatcher(None, np, suffix).ratio() >= 0.90:
+        # containment too, not only end-alignment: a stray non-sentence tail ending
+        # (e.g. a dangling heading) shifts the suffix window and hid a 2-sentence
+        # verbatim echo (live-tested 2026-07-05); the tail is ≤~300 chars, so a
+        # ≥25-char leading run appearing ANYWHERE in it is still surely an echo
+        if nt.endswith(np) or np in nt or SequenceMatcher(None, np, suffix).ratio() >= 0.90:
             best = m.end()                        # keep extending: cut the LAST echoed sentence
     return page[best:].lstrip(" \n") if best else page
+
+
+_SOFT_STRUCT = re.compile(r"^\s*(#{1,6}\s|[—–\-*•>]\s*|\d+[.)]\s)")
+
+
+def _soften_line_breaks(text: str) -> str:
+    """Collapse one-sentence-per-line drift. Mercury intermittently ends every sentence
+    with a markdown hard break ('  \\n') inside what should be a flowing paragraph; the
+    reader's `.prose` is `white-space: pre-wrap`, so each such newline renders as a real
+    break and the page reads as chopped fragments (worst on tutorial/story keyframes and
+    every tween). Join single newlines WITHIN a paragraph into a space, preserving true
+    paragraph breaks (blank lines) and any STRUCTURAL line — a heading, or a dialogue /
+    list / numbered marker — so dialogue turns, Q&A, and chronicle entries keep the breaks
+    they mean. Runs in the engine before caching/emit, so page.text (and the karaoke /
+    clarify / TTS offset map computed from it downstream) stays self-consistent."""
+    blocks = []
+    for block in re.split(r"\n{2,}", text):
+        merged: list[str] = []
+        for ln in block.split("\n"):
+            if (merged and merged[-1].strip() and ln.strip()
+                    and not _SOFT_STRUCT.match(ln) and not _SOFT_STRUCT.match(merged[-1])):
+                merged[-1] = merged[-1].rstrip() + " " + ln.strip()
+            else:
+                merged.append(ln)
+        blocks.append("\n".join(l.rstrip() for l in merged))   # drop hard-break residue
+    return "\n\n".join(blocks)
 
 
 class Renderer:
@@ -2941,19 +3497,75 @@ class Renderer:
                     # framing is yours", and an earlier wording ("the telling is
                     # yours") lexically contradicted this line's tense/person contract
                     _jlines.append("told in: " + ", ".join(held) + ", held on every page")
+                # THE POV LOCK — bind the fixed viewpoint to the person so "you"/"I"/"she"
+                # all mean the protagonist, never a drifting watcher or a switch to another
+                # figure's eyes. This is the load-bearing fix for the "camera gliding through
+                # a gallery" drift: the plot events now put the protagonist in every scene,
+                # and this holds the lens on them.
+                if plan.protagonist and self.form == "story":
+                    _bind = {"second person": f"“you” ARE {plan.protagonist}",
+                             "first person": f"the “I” is {plan.protagonist}",
+                             "third person": f"stay close on {plan.protagonist}"}.get(
+                                 _pn, f"the story is {plan.protagonist}'s")
+                    _jlines.append(
+                        f"whose story: {plan.protagonist} — every page is theirs, seen "
+                        f"through them alone ({_bind}). Even when a page's material is mostly "
+                        f"about others or a place, it is {plan.protagonist} who arrives in it, "
+                        f"witnesses it, and acts — the material's own figures are only what "
+                        f"{plan.protagonist} meets there. Never switch to another figure's "
+                        f"eyes or a bystander's. Call {plan.protagonist} by NAME on the page "
+                        f"— at least once, early — a viewpoint carried only by pronouns "
+                        f"dissolves into nobody")
             if plan.correspondents and self.form in _CAST_FORMS:
                 _cast_full = (plan.telling.split("|", 2) + ["", "", ""])[2]
                 _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
                 if _cb:
                     _jlines.append(_cb)
+            # THE STORY'S OWN PEOPLE — the planner's named cast, stated as canon DATA.
+            # The material can never ground an invented companion (a mentor, a rival the
+            # plot gave a name), so without this line the render dropped every beat that
+            # turned on one — staging only the half of the event the material supports
+            # (the Cael Morren finding: the mentor's death and the memory-sacrifice
+            # simply never happened). Named here, they are as real on every page as the
+            # material's figures: the render may put them in any scene the plot needs.
+            if plan.cast and self.form in _PLOT_ENACTED:
+                _jlines.append(f"the story's own people, as real in every scene as the "
+                               f"material's figures: {plan.cast}")
+            # THE MOTIF — the page's emotional color, planner-assigned from the
+            # path's small recurring palette (a leitmotif, not a per-page roll).
+            # One motif, concept grain, shown never said: it colors the actions,
+            # images, and pacing, but its NAME must not surface in the prose.
+            if plan.mood and self.form in _PLOT_ENACTED:
+                _jlines.append(f"this page's mood, coloring every action and image "
+                               f"(felt in the scene, never named outright on the "
+                               f"page): {plan.mood}")
+            _did = plan.plot_kind == "didactic"
             if plan.plot:
-                _jlines.append(f"plot: {plan.plot}")
-            if plan.plot_done:
-                _jlines.append(f"already happened: {plan.plot_done}")
+                _jlines.append(("promise: " if _did else "plot: ") + plan.plot)
+            # THE SYLLABUS LOCK — the didactic sibling of the story's POV lock:
+            # the promise holds every page the way the protagonist holds a story
+            # (without it, late pages drifted off-course — the finale especially)
+            if _did and plan.plot:
+                _jlines.append("the course: every page teaches toward the promise, "
+                               "in one held register, to the last page — the "
+                               "syllabus is the spine, never departed")
+            if plan.journey:
+                # THE JOURNEY LOG — what the pages ACTUALLY did (one line each).
+                # Strictly better than the outline's landed events: it holds the
+                # concrete names and images later pages can call back to.
+                _jlines.append(f"so far: {plan.journey}")
+            elif plan.plot_done:
+                _jlines.append(("already taught: " if _did else "already happened: ")
+                               + plan.plot_done)
             if plan.plot_state:
-                # standing consequences — present-tense state every page lives
-                # inside (a spent voice stays spent; the fallout is the story)
-                _jlines.append(f"standing now, not undone: {plan.plot_state}")
+                if _did:
+                    # the stacked GAINS — the abilities every later lesson may
+                    # stand on (this is what "standing on earlier beats" needs)
+                    _jlines.append(f"the reader can already: {plan.plot_state}")
+                else:
+                    # standing consequences — present-tense state every page lives
+                    # inside (a spent voice stays spent; the fallout is the story)
+                    _jlines.append(f"standing now, not undone: {plan.plot_state}")
             if plan.canon:
                 _jlines.append(f"established names (reuse, never rename): {plan.canon}")
             # The same silent-context convention as the recap block (which has never
@@ -3001,12 +3613,46 @@ class Renderer:
         # paragraph. One entrance/transition clause rides it; that's the whole frame.
         if plan.goal and plan.mode in ("open", "move", "dwell", "bridge"):
             _ev = plan.plot_event.rstrip(". ").strip()
-            if plan.mode == "bridge":
-                _through = (f" The way passes through “{plan.headings[1]}” — bring what "
-                            f"it adds into the story." if len(plan.headings) == 3 else "")
+            # p21 — DIDACTIC CORRIDORS. The bridge tasks below are story-shaped
+            # ("the road", "{who} crosses paths with") for every form; with the
+            # p20 protagonist gate their fallback literally invented "the
+            # traveler" as a character on tutorial bridges (the last register
+            # leak). A course's corridor is a hand-off between lessons, not a road.
+            if plan.plot_kind == "didactic" and plan.mode == "bridge":
+                if plan.waypoint and len(plan.headings) == 3:
+                    task_line = (f"NOW: Between the lesson on “{_ta}” and the next on "
+                                 f"“{_tb}”, the course pauses on “{plan.headings[1]}” — "
+                                 f"a brief ASIDE that teaches the one thing it adds to "
+                                 f"the promise, from the material above, complete in "
+                                 f"itself. Speak to the reader; no scene, no figure "
+                                 f"walking anywhere. Then point forward without "
+                                 f"starting “{_tb}”. Paraphrase, {invent}.\n\n")
+                else:
+                    task_line = (f"NOW: A short connective page between the lesson on "
+                                 f"“{_ta}” and the next on “{_tb}”: consolidate what "
+                                 f"the reader can now do and set up why “{_tb}” comes "
+                                 f"next — approach it, never begin it. Speak to the "
+                                 f"reader; no scene, no invented figure. Flowing "
+                                 f"paragraphs. Paraphrase, {invent}.\n\n")
+            elif plan.mode == "bridge" and plan.waypoint and len(plan.headings) == 3:
+                # A WAYPOINT is a deliberate SIDE-ENCOUNTER — a small, self-contained
+                # moment the protagonist meets on the way, a little story inside the
+                # journey. Concept-level only (a whole small moment), never an enumerated
+                # meet→challenge→overcome shape, which would leak into the prose as
+                # scaffolding. The carry-forward is automatic (the journey log records
+                # what this page did, so later pages already stand on it) — so it is NOT
+                # instructed here, only that the moment be complete in itself.
+                _who = plan.protagonist or "the traveler"
+                task_line = (f"NOW: On the way from “{_ta}” toward “{_tb}”, {_who} crosses "
+                             f"paths with “{plan.headings[1]}” — a brief, self-contained "
+                             f"moment made from the material above, whole in itself before "
+                             f"the road goes on. Stay in {_who}'s viewpoint. Approach "
+                             f"“{_tb}” but do not arrive yet. Flowing paragraphs of full "
+                             f"sentences, {invent}.\n\n")
+            elif plan.mode == "bridge":
                 task_line = (f"NOW: Continue the journey from “{_ta}” toward “{_tb}” — a "
                              f"short page of road between them, made from the material "
-                             f"above.{_through} Carry forward the consequence of what just "
+                             f"above. Carry forward the consequence of what just "
                              f"happened; approach “{_tb}” but stop short of it. Flowing "
                              f"paragraphs of full sentences — a tween is prose, never a "
                              f"stack of one-line fragments. Paraphrase, {invent}.\n\n")
@@ -3015,24 +3661,121 @@ class Renderer:
                 # spend it, and it stays spent (the journey's `standing` line
                 # carries it forward so later pages deal with the fallout).
                 _price = plan.plot_cost.rstrip(". ").strip()
-                _mark = (f" Let it leave its mark — by this scene's end, {_price} — "
+                # SPEND THE COST — the price must LAND on the page (shown in the
+                # protagonist's body or bearing as it happens), not merely be stated in
+                # passing; otherwise the stakes stay on the outline and the scene feels
+                # weightless (the "costs don't land" gap).
+                _mark = (f" Spend the cost on the page — show it land, in flesh or bearing, "
+                         f"as it happens (not merely reported): by this scene's end {_price}, "
                          f"and the mark stays.") if _price else ""
                 if self.form in _PLOT_ENACTED:
+                    # ESTABLISH + INTRODUCE — a story earns its scenes by first telling the
+                    # reader who this is and, at each meeting, who they've met. Without it a
+                    # path reads as "a name does things to another name" (the reader's exact
+                    # complaint: "who is Aurak? who is Luna? — never said"). Only when there
+                    # IS a viewpoint figure (mid/high dream); the factual tour keeps the bare
+                    # world-sketch open.
+                    _prot = plan.protagonist
                     if plan.mode == "open":
-                        _verb = (f"Open the story: sketch the standing world in a few "
-                                 f"strokes — one distinct sensory register, painted once — "
-                                 f"then write the scene in which {_ev}.{_mark}")
+                        _verb = ((f"Open the story by introducing {_prot}: in a few concrete "
+                                  f"strokes establish who they are and what they want, and "
+                                  f"the world they move in — one distinct sensory register, "
+                                  f"painted once — then set that want in motion with the "
+                                  f"scene in which {_ev}.{_mark}") if _prot else
+                                 (f"Open the story: sketch the standing world in a few "
+                                  f"strokes — one distinct sensory register, painted once — "
+                                  f"then write the scene in which {_ev}.{_mark}"))
                     elif _arc_pos == "last":
-                        _verb = (f"Write the final scene, in which {_ev}.{_mark} Bring "
-                                 f"one image from the journey's start back, changed.")
+                        _end = (" Whoever the protagonist faces here, let who or what they "
+                                "are come clear — never spring a stranger at the end." if _prot
+                                else "")
+                        _verb = (f"Write the final scene, in which {_ev}.{_mark}{_end} This is "
+                                 f"the ENDING: the story's central want is SETTLED here — won "
+                                 f"or lost, for good — never deferred to one more door, relic, "
+                                 f"or further quest. Bring one image from the journey's start "
+                                 f"back, changed, and stop.")
                     else:
-                        _verb = f"Write the scene in which {_ev}.{_mark}"
+                        _intro = (" Whoever or whatever the protagonist meets here, let who "
+                                  "or what they are come clear as they enter — the reader is "
+                                  "meeting them for the first time, not told to already know."
+                                  if _prot else "")
+                        # DRAMATIC CAUSALITY — the scene must be FORCED by the last, not the
+                        # next stop on a tour (the fetch-quest reads flat because scenes only
+                        # ADJOIN). Causality only — the COST is not forced here; it rides the
+                        # price (_mark), which the planner now concentrates at the fall/climax,
+                        # so a rising beat can move the story without a sacrifice on every page.
+                        _drive = (f" What just happened drives {_prot} to act here — the scene "
+                                  f"is caused by the last, not merely the next place along." if _prot else "")
+                        _verb = f"Write the scene in which {_ev}.{_mark}{_intro}{_drive}"
+                elif plan.plot_kind == "didactic":
+                    # a lesson, not a turn: the gain is checkable ("the reader can
+                    # …"), so it rides the task the same way a price does. GROUND
+                    # THE TEACHING — the render kept fabricating hands-on-looking
+                    # practice tasks on knowledge material (the no_busywork=0.25
+                    # sweep finding: "draw a line from the storm's center… test by
+                    # simulating a gust" — steps that teach nothing the material
+                    # holds). Positive rule, one concept-negative, no example list.
+                    _verb = (f"This page's lesson: {_ev}."
+                             + (f" By its end the reader can {_price}." if _price
+                                else "")
+                             + " Teach it entirely from what the material actually"
+                               " holds — its facts, examples, and any procedure it"
+                               " genuinely contains; a step that exists only to"
+                               " give the reader busywork is cut, and explaining a"
+                               " thing well beats inventing a task about it.")
                 else:
                     _verb = (f"Carry the journey to its next development: {_ev}."
                              + (f" Its price: {_price}." if _price else ""))
                 _cov = (self.form_coverage + " ") if self.form_coverage else ""
-                task_line = (f"NOW: {_verb} Stage it with the material above. {_cov}"
-                             f"Paraphrase rather than quote, {invent_page}.\n\n")
+                # SUBORDINATE MATERIAL TO THE SCENE — the material is the SETTING and the
+                # canon facts (the stage, the props, what is true here), not the scene's
+                # subject. The render kept retelling the gate node's OWN events (a dragon's
+                # tale) in place of the plot's choice/cost, because "stage it with the
+                # material" read as "make the material the story". Reframed so the plot event
+                # is the scene and the material is where it happens.
+                if self.form in _PLOT_ENACTED and plan.protagonist:
+                    # p14 — DRAMATIZE, don't describe (mid/high dream: there IS a viewpoint
+                    # figure). On descriptive-material vaults the render turned the planned
+                    # TURN (a defeat, a sacrifice) into a tour of the setting with the
+                    # protagonist watching — or INVERTED the conflict into cooperation (Cael
+                    # Morren: Eira "set the coil true" WITH Castellan Brine, the man the plot
+                    # says overpowers her; the finale = she walks the city, no sacrifice). A
+                    # trailing "make the material the setting" nudge loses to the material's
+                    # mass, so flip the PAGE'S POLARITY: the EVENT happening IS the page; the
+                    # material is only the physical stage. Gated on a protagonist, so the
+                    # LOW-dream factual tour (no protagonist) keeps describing faithfully.
+                    _prota = plan.protagonist
+                    # a PRICE present = the planner's fall/climax (it concentrates cost there):
+                    # force the conflict to LAND, not resolve into agreement or observation.
+                    _turn = (f" This is a turning-point: the conflict lands and holds — {_prota} "
+                             f"acts, the world pushes back, and the cost is paid here on the page, "
+                             f"not avoided, talked away, or settled by agreement.") if _price else ""
+                    task_line = (f"NOW: {_verb}{_turn} Write the event as it HAPPENS — {_prota} "
+                                 f"doing, the world answering, the consequence landing, moment to "
+                                 f"moment — not a description of the place with {_prota} looking on. "
+                                 f"The material above is only the physical stage: what is solid and "
+                                 f"true and nameable here. Draw on it for setting and props, but "
+                                 f"never narrate the material's own account in place of the scene. "
+                                 f"{_cov}Paraphrase rather than quote, {invent_page}.\n\n")
+                elif plan.plot_kind == "didactic":
+                    # p18 — the didactic material contract. Tutorials were inheriting
+                    # the STORY's setting/stage/props clause below, which means nothing
+                    # didactically — so material-coverage instinct took over and gate
+                    # pages taught whatever the material held (biography detours,
+                    # register shifts: the stays_on_promise=0 finding). A lesson's
+                    # material is a SOURCE to select from, not a place to stage.
+                    task_line = (f"NOW: {_verb} The material above is this lesson's SOURCE — "
+                                 f"take from it only what teaches this page's lesson, and let "
+                                 f"the rest stay unused; the page never leaves the promised "
+                                 f"course for a figure's life story or a different register. "
+                                 f"{_cov}Paraphrase rather than quote, {invent_page}.\n\n")
+                else:
+                    task_line = (f"NOW: {_verb} The material above is the SETTING and the canon "
+                                 f"facts of this place — its stage and props, what is true here; "
+                                 f"do NOT retell the material's own events in place of the scene "
+                                 f"above — use it as WHERE this happens and WHAT is real, and let "
+                                 f"the scene be the one described. {_cov}"
+                                 f"Paraphrase rather than quote, {invent_page}.\n\n")
             elif plan.beat:                     # plotless fallback — the beat is the job
                 task_line = (f"NOW: {instr} This page's job: {plan.beat}\n"
                              f"Paraphrase rather than quote, {invent_page}.\n\n")
@@ -3048,23 +3791,48 @@ class Renderer:
         dream_directive = ""
         if self.dream > 0:
             pct = int(round(self.dream * 100))
-            if self.dream < 0.66:
+            if plan.plot_kind == "didactic":
+                # p20 — a LESSON's creativity is pedagogic, at every dial band:
+                # invention serves the teaching, never a telling. (Without this
+                # gate the branches below armed tutorials with write-their-story
+                # / dramatize-it instructions — the register-drift disease.)
+                dream_directive = (
+                    f"\n\nCREATIVITY (dial {pct}%): invent TEACHING instruments — "
+                    f"analogies, worked examples, concrete illustrations not in the "
+                    f"source — in service of this page's lesson. The material's facts "
+                    f"stay canon. Never invent a scene or a character to carry the "
+                    f"lesson: the READER is the only person on the page.")
+            elif plan.protagonist and plan.plot and self.form in _PLOT_ENACTED:
+                # THE WRITER'S JOB IS TO CONNECT. The spine is a DIVERSE walk on purpose —
+                # its value is throwing unrelated nodes together; if they already related
+                # directly you'd just write a book. So the material is not a record to
+                # reproduce but raw stuff to build a story FROM: the writer invents the
+                # connective tissue the walk didn't make (a good writer makes any set of
+                # things cohere; a dream stitches unrelated images into a storyline). Facts
+                # stay canon — what each thing IS is true — but the STORY BETWEEN the pieces
+                # (why the protagonist is here, how this follows, the bridges) is invented,
+                # and the DIAL governs how boldly: plausible/grounded at mid, dream-logic at
+                # high. This is what lets ONE coherent through-line ride a diverse spine and
+                # keeps the protagonist present even where a page's material never names them.
+                _bold = ("invent the connections a dreaming mind builds between things that "
+                         "do not obviously relate — the reasons, the bridges, whatever turns "
+                         "these separate pieces into one story"
+                         if self.dream >= 0.66 else
+                         "invent the plausible bridges between the pieces — how this follows "
+                         "from what came before, and what brings the protagonist here")
+                dream_directive = (
+                    f"\n\nCREATIVITY (dial {pct}%): you are WRITING {plan.protagonist}'s story, "
+                    f"not reproducing a record. What each thing in the material IS stays canon "
+                    f"— but the story BETWEEN the pieces is yours: {_bold}. Put "
+                    f"{plan.protagonist} into this scene even when the material is about others "
+                    f"or a place — they come to it, act in it, and carry it forward. Wounds "
+                    f"and losses may land here, and they stay.")
+            elif self.dream < 0.66:
                 dream_directive = (
                     f"\n\nCREATIVITY (dial {pct}%): the material's FACTS are canon; the FRAMING "
                     f"is yours. Invent analogy and concrete illustration not in the "
                     f"source, so this reads as narrative rather than summary — every image "
                     f"earned, the craft rules above still binding.")
-            elif plan.plot:
-                # High dream on a PLOT path: the journey already committed a viewpoint,
-                # cast, and events — license invention WITHIN them, or (with recency
-                # advantage over the journey block) this clause overrides the contract.
-                dream_directive = (
-                    f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
-                    f"dramatize it. Invent texture, incident, and minor figures within the "
-                    f"journey's committed viewpoint, cast, and events, never contradicting "
-                    f"the material's facts. The world's lore is canon; what this journey "
-                    f"COSTS its figures is the story's to spend — wounds and losses may "
-                    f"land here, and they stay.")
             else:
                 dream_directive = (
                     f"\n\nCREATIVITY (dial {pct}%): the material is CANON for a SCENE — "
@@ -3100,7 +3868,14 @@ class Renderer:
                            f"{tween_form}") if tween_form else ""
             else:
                 form_ch = f"FORM — render this whole page {self.form_directive}"
-                if self.form_example:
+                # The full shape example rides the FIRST beat of a journey (and
+                # every free-wander page, where pages are standalone by design).
+                # Later beats keep the directive + their phase note only: N pages
+                # stamped from one identical skeleton is what made a path read as
+                # clones — every tutorial page re-promising, re-closing on success
+                # criteria, cold-opening over the continuation clause ("examples
+                # replicate"; the checkable template beats the vague instruction).
+                if self.form_example and (not plan.goal or _arc_pos == "first"):
                     form_ch += "\n" + self.form_example
                 form_ch += phase_note
             if form_ch:
@@ -3149,6 +3924,10 @@ class Renderer:
         _bridge = plan.mode == "bridge"
         _shape = _TWEEN_SHAPE if _bridge else self.form_shape
         _n = max(120, PAGE_WORDS // 2) if _bridge else PAGE_WORDS
+        # A WEIGHTED FINALE spends its weight on a fuller final scene (it no longer dwells
+        # into a recap — see _gate_dwell_target), so the ending lands with room to breathe.
+        if _arc_pos == "last" and plan.gate_weight >= 2 and not _bridge:
+            _n = int(_n * (1.15 if plan.gate_weight == 2 else 1.3))
         _n = int(_n * _LEVEL_WORDS.get(self.level, 1.0))   # a child's page is shorter
         system = (f"<voice>\n{self.voice_directive}\n</voice>\n\n" + lang_block + level_block
                   + _PERSONA.format(topic=self.topic or "this subject",
@@ -3167,10 +3946,54 @@ class Renderer:
                     effort=("low" if attempt else None), temperature=temp)
                 self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
                                               model=self.model, is_sub_call=True)
-                return _strip_tail_echo(text, tail)
+                return _soften_line_breaks(_strip_tail_echo(text, tail))
             except Exception as exc:
                 last_exc = exc
         return f"[render failed: {last_exc}] {plan.material[:200]}"
+
+    def digest_line(self, text: str) -> str:
+        """One line of JOURNEY LOG — what a just-rendered path page actually did,
+        for PathNavigator.add_digest. Cheap (effort=low, ~25 out-tokens) and only
+        needed by the NEXT page's prompt, so callers may run it off the hot path.
+        Returns "" on any failure — the log just misses a line."""
+        if self.dry or not text.strip():
+            return ""
+        sys_ = ("You keep the running log of a serialized work. Reply with ONE "
+                "line of at most 20 words, past tense, no preamble: the single "
+                "most important thing that happened or was established on this "
+                "page, with its concrete names.")
+        try:
+            line, i, o = self._complete(sys_, text[:4000], effort="low")
+            self.cost_tracker.record_call(input_tokens=i, output_tokens=o,
+                                          model=self.model, is_sub_call=True)
+            return " ".join(line.splitlines()[0].split())[:220]
+        except Exception:
+            return ""
+
+    def derive_steps(self, text: str) -> list[str]:
+        """3–5 imperative steps distilled from a rendered TUTORIAL page, for the
+        stepped-list text-figure (the prose stays flowing for the ear; the panel
+        carries the sequence for the eye — DWELL_TEXT_FIGURES_PLAN). Empty list =
+        no panel (the page asks the reader to do nothing, or the call failed)."""
+        if self.dry or not text.strip():
+            return []
+        sys_ = ("You extract the DOING from a lesson page. Reply with 3 to 5 "
+                "numbered lines and nothing else — each line one imperative step "
+                "the reader performs, under 14 words, in the page's own order, "
+                "drawn only from the page. If the page asks the reader to do "
+                "nothing, reply NONE.")
+        try:
+            raw, i, o = self._complete(sys_, text[:4000], effort="low")
+            self.cost_tracker.record_call(input_tokens=i, output_tokens=o,
+                                          model=self.model, is_sub_call=True)
+        except Exception:
+            return []
+        steps = []
+        for ln in raw.splitlines():
+            m = re.match(r"\s*\d+[.)]\s+(.+)", ln)
+            if m:
+                steps.append(m.group(1).strip())
+        return steps[:5] if len(steps) >= 2 else []
 
     def _complete(self, system: str, user: str, on_stream=None,
                   diffusing: bool = False, effort: str | None = None,

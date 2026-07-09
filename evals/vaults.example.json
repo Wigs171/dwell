@@ -1,0 +1,5 @@
+{
+  "fiction": "/path/to/your/fiction-vault",
+  "lore": "/path/to/your/lore-vault",
+  "reference": "/path/to/your/reference-vault"
+}

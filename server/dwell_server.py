@@ -71,8 +71,8 @@ from starlette.concurrency import run_in_threadpool
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dwell import (  # noqa: E402
     Brain, Navigator, PathNavigator, Renderer, ReadingHistory, TweenCache, PagePlan,
-    VaultPaths, missed_connections, VOICES, DEFAULT_VOICE, LEVELS, DEFAULT_LEVEL,
-    LANGUAGES, DEFAULT_LANGUAGE,
+    VaultPaths, missed_connections, plot_kind_for, VOICES, DEFAULT_VOICE, LEVELS,
+    DEFAULT_LEVEL, LANGUAGES, DEFAULT_LANGUAGE,
     FORMS, DEFAULT_FORM,
     TWEEN_CACHE_FILE, HISTORY_FILE, TAIL_CHARS, _read_env_key,
 )
@@ -128,6 +128,7 @@ class DwellSession:
     path: dict | None = None                        # active curated Path meta (id/title/goal/gates), else free-wander
     generated_path: dict | None = None              # last generator output (walked via path_id="__generated__")
     text_fig_density: str = DEFAULT_DENSITY                       # off|sparse|normal|rich — how often a no-image page carries a derived text-figure
+    steps_cache: dict = field(default_factory=dict)               # renderer.cache_key(plan) -> derived tutorial steps (re-level/repage don't re-pay the sub-call)
     source_titles: dict[str, str] = field(default_factory=dict)  # source id -> readable title (cached)
     wander: float = DEFAULT_WANDER
     created: float = 0.0
@@ -505,17 +506,36 @@ def _page_images(s: DwellSession, node, plan=None) -> dict:
     return {"layout": layout, "images": [served(images[i]) for i in idxs]}
 
 
-def _page_text_figure(s: DwellSession, node, plan, page_text: str, has_image: bool) -> dict:
+def _page_text_figure(s: DwellSession, node, plan, page_text: str, has_image: bool,
+                      steps: list | None = None) -> dict:
     """The `text_figure` block folded into a page's `done` event — a DERIVED text-figure
-    (drop-cap / pull-quote / …) for a no-image page, or None. Deterministic by the page's
-    stable ordinal on its node (so re-pitch/coast don't flicker), gated by the active form's
-    affinity + a density dial. See text_figures.choose_text_figure."""
+    (drop-cap / pull-quote / stepped-list / …) for a no-image page, or None. Deterministic
+    by the page's stable ordinal on its node (so re-pitch/coast don't flicker), gated by
+    the active form's affinity + a density dial. `steps` (a tutorial keyframe's derived
+    moves — see _tutorial_steps) short-circuits into the stepped-list panel."""
     if node is None or plan is None:
         return {"text_figure": None}
     pos = _node_page_pos(s, node.id, plan.key())
     fig = choose_text_figure(page_text, s.renderer.form, pos, node.id,
-                             has_image=has_image, density=s.text_fig_density)
+                             has_image=has_image, density=s.text_fig_density,
+                             steps=steps)
     return {"text_figure": fig}
+
+
+def _tutorial_steps(s: DwellSession, plan, page_text: str, has_image: bool) -> list | None:
+    """Derive (and cache) the stepped-list panel's steps for a TUTORIAL path keyframe —
+    the prose stays flowing for the ear, the panel carries the sequence for the eye.
+    None everywhere else: tweens are hand-offs between lessons (no steps of their own),
+    images win the figure slot, and free-wander tutorial pages stay panel-free (a lone
+    page isn't a lesson in a course). Cached by the full render cache key, so re-level /
+    re-voice re-derive from the NEW text instead of replaying stale steps."""
+    if (s.renderer.form != "tutorial" or not plan.goal or s.renderer.dry or has_image
+            or plan.mode not in ("open", "move", "dwell")):
+        return None
+    key = s.renderer.cache_key(plan)
+    if key not in s.steps_cache:
+        s.steps_cache[key] = s.renderer.derive_steps(page_text)
+    return s.steps_cache[key] or None
 
 
 def _voices_payload(s: DwellSession) -> dict:
@@ -1215,13 +1235,16 @@ def _path_block(s: DwellSession) -> dict:
 
 
 def _ensure_path_plot(s: DwellSession) -> None:
-    """THE PLOT / THROUGH-LINE — one planning call per path, ANY form: a premise +
-    one turn per gate, decided before the first page renders, so every journey has
-    somewhere to GO (narrative forms enact the turns; expository forms arrive at
-    them). Lazy + idempotent (the /form hook re-fires it harmlessly). Dry mode and
-    failures leave the path plotless (beat-function-only pages, the old behavior)."""
+    """THE PLOT / THROUGH-LINE — one planning call per path, ANY form, decided
+    before the first page renders, so every journey has somewhere to GO. The
+    brief's KIND follows the active form: narrative forms get a premise + turns
+    with lasting prices (enacted or arrived-at); didactic forms (tutorial/guided/
+    qa/brief) get a syllabus — a promise + one lesson per gate with stacking
+    gains. Lazy + idempotent while the kind matches; the /form hook re-fires it,
+    which replans across the narrative/didactic boundary. Dry mode and failures
+    leave the path plotless (beat-function-only pages, the old behavior)."""
     nav = s.nav
-    if not isinstance(nav, PathNavigator) or nav.plot_premise or s.renderer.dry:
+    if not isinstance(nav, PathNavigator) or s.renderer.dry:
         return
 
     def _complete(sysmsg: str, usr: str) -> str:
@@ -1233,7 +1256,8 @@ def _ensure_path_plot(s: DwellSession) -> None:
             pass
         return text
 
-    nav.ensure_plot(_complete)                  # swallows its own failures
+    nav.ensure_plot(_complete, kind=plot_kind_for(s.renderer.form),
+                    dream=s.renderer.dream)                 # swallows failures
 
 
 def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
@@ -1285,6 +1309,7 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
         s.proposed.clear()
         s.page_renders.clear()
         s.node_page_order.clear()                   # restart the per-node image-cycling cursors
+        s.steps_cache.clear()
     if s.nav is None:
         emit("error", {"message": "session not started — call /page with action=first"})
         return
@@ -1351,6 +1376,7 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
         s.nav.observe_canon(text)               # feed the canon sink (V2 sink tokens)
     node = s.brain.nodes.get(plan.node)
     imgs = _page_images(s, node, plan)
+    _steps = _tutorial_steps(s, plan, text, bool(imgs.get("images")))
     emit("done", {
         "text": text, "node": plan.node, "title": plan.title, "mode": plan.mode,
         "marker": marker, "recap": recap, "steer_bucket": plan.steer_bucket,
@@ -1359,8 +1385,17 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
         "dream": s.renderer.dream,
         **({"path": _path_block(s)} if s.path else {}),
         **imgs,
-        **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images"))),
+        **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images")),
+                            steps=_steps),
     })
+    # THE JOURNEY LOG — distill "what this page did" into one line of running
+    # memory. Only the NEXT page's prompt needs it, so it runs on a detached
+    # thread after the page is already on screen; a fast advance just misses the
+    # newest line (the journey block falls back to the planned outline).
+    if plan.goal and isinstance(s.nav, PathNavigator) and not s.renderer.dry:
+        _nav, _rend = s.nav, s.renderer
+        threading.Thread(target=lambda: _nav.add_digest(_rend.digest_line(text)),
+                         daemon=True).start()
 
 
 @app.post("/page")
@@ -1457,6 +1492,7 @@ def _reproduce_page(s: DwellSession, index: int, emit) -> None:
                 marker = "live"
     # NB: do NOT touch s.tail or the navigator — this is a re-pitch of one page.
     imgs = _page_images(s, node, plan)
+    _steps = _tutorial_steps(s, plan, text, bool(imgs.get("images")))
     emit("done", {
         "text": text, "node": plan.node, "title": plan.title, "mode": plan.mode,
         "marker": marker, "recap": lr["recap"], "steer_bucket": plan.steer_bucket,
@@ -1465,7 +1501,8 @@ def _reproduce_page(s: DwellSession, index: int, emit) -> None:
         "dream": s.renderer.dream,
         **({"path": _path_block(s)} if s.path else {}),
         **imgs,
-        **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images"))),
+        **_page_text_figure(s, node, plan, text, has_image=bool(imgs.get("images")),
+                            steps=_steps),
     })
 
 

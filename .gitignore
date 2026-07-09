@@ -53,3 +53,14 @@ vaults/*
 Thumbs.db
 .idea/
 .vscode/
+
+# evals — machine-local artifacts (corpus, scores, labels, source texts, config)
+evals/history.jsonl
+evals/labels.jsonl
+evals/stories/
+evals/*.log
+evals/gut_*.txt
+evals/vaults.local.json
+evals/path_test_*.md
+evals/sonnet_*.json
+evals/prompt_dump.txt

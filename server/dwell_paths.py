@@ -194,11 +194,22 @@ def generate_spine(brain, rng, *, length: int = 5, temperature: float = 0.6,
     ids = brain.ids
     if len(ids) <= max(2, length - 1):
         return list(ids)
+    sp = brain.space
     best, best_score = None, -1.0
     for _ in range(max(1, candidates)):
         start = _sample_start(brain, rng, avoid, history)
         dest = _sample_dest(brain, rng, start, avoid, history)
-        route = _route(brain, rng, start, dest, length, temperature)
+        # DELTA → LENGTH: a journey across a big conceptual gap earns more stops; a short
+        # hop stays short (the user's "the delta between start and end could determine
+        # story length"). The passed `length` is the mid-scale; the start↔dest distance
+        # modulates it ±40% and clamps to a sane 3–9. Sampled per candidate, so a run that
+        # happens to pick far endpoints naturally tells a longer story.
+        try:
+            far = 1.0 - max(0.0, min(1.0, sp.cos(sp.vec(start), sp.vec(dest))))
+        except Exception:
+            far = 0.5
+        eff_length = max(3, min(9, round(length * (0.7 + 0.7 * far))))
+        route = _route(brain, rng, start, dest, eff_length, temperature)
         if len(route) < 3:
             continue
         score = _coherence(brain, route) + 0.05 * len(route)

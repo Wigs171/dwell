@@ -549,10 +549,15 @@
      node — it's a .dropcap class driving ::first-letter. Both only on no-image pages. -->
 {#snippet pullQuote(c: Card)}{#if c.page!.textFigure?.kind === 'pull-quote'}<figure class="tf-pullquote" data-narration="skip" aria-hidden="true">{c.page!.textFigure.payload.text}</figure>{/if}{/snippet}
 
+<!-- a tutorial keyframe's derived steps: the prose stays flowing for the ear (TTS), the
+     panel carries the sequence for the eye. A <figure data-narration="skip"> after the
+     text, so the karaoke/clarify offset walk is untouched. -->
+{#snippet stepsPanel(c: Card)}{#if c.page!.textFigure?.kind === 'stepped-list' && c.page!.textFigure.payload.steps?.length}<figure class="tf-steps" data-narration="skip"><div class="tf-h">In sequence</div><ol>{#each c.page!.textFigure.payload.steps as s}<li>{s}</li>{/each}</ol></figure>{/if}{/snippet}
+
 {#snippet pageBody(c: Card)}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="prose" class:dropcap={c.page!.textFigure?.kind === 'drop-cap'} lang="en" use:regProse={c.key} role="document"
-       onmouseup={c.center ? onMouseUp : undefined}>{@render pullQuote(c)}{c.page!.text}</div>
+       onmouseup={c.center ? onMouseUp : undefined}>{@render pullQuote(c)}{c.page!.text}{@render stepsPanel(c)}</div>
   {@render metaLine(c)}
 {/snippet}
 
@@ -589,7 +594,7 @@
   {@const formCls = form === 'dialogue' ? 'form-dialogue' : form === 'qa' ? 'form-qa' : ''}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="prose {formCls}" class:dropcap={c.page!.textFigure?.kind === 'drop-cap'} lang="en" use:regProse={c.key} role="document"
-       onmouseup={c.center ? onMouseUp : undefined}>{@render pullQuote(c)}{#each splitBlocks(c.page!.text) as blk, i}{@const h = headingKind(blk, marks)}{#if h}<div class="rich-{h}">{@render inlineRender(inlineSegs(blk, marks))}</div>{:else}<p class={lineClass(form, blk.text, i)}>{@render inlineRender(inlineSegs(blk, marks))}</p>{/if}{/each}</div>
+       onmouseup={c.center ? onMouseUp : undefined}>{@render pullQuote(c)}{#each splitBlocks(c.page!.text) as blk, i}{@const h = headingKind(blk, marks)}{#if h}<div class="rich-{h}">{@render inlineRender(inlineSegs(blk, marks))}</div>{:else}<p class={lineClass(form, blk.text, i)}>{@render inlineRender(inlineSegs(blk, marks))}</p>{/if}{/each}{@render stepsPanel(c)}</div>
   {@render metaLine(c)}
 {/snippet}
 
@@ -752,6 +757,34 @@
     color: color-mix(in srgb, var(--ink) 86%, var(--accent));
     border-top: 2px solid var(--accent); padding-top: 0.5em;
   }
+  /* stepped-list: a tutorial keyframe's derived moves as a numbered inset panel
+     (mirrors textfigures.css .tf-steps — the lab's validated composition). */
+  :global(.prose .tf-steps) {
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 0.85em 1.05em; margin: 1em 0 0.2em;
+    counter-reset: tfstep; clear: both;
+  }
+  :global(.prose .tf-steps .tf-h) {
+    font-family: var(--ui, system-ui), sans-serif;
+    font-size: 0.66em; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--accent);
+    margin: 0 0 0.5em;
+  }
+  :global(.prose .tf-steps ol) { list-style: none; margin: 0; padding: 0; }
+  :global(.prose .tf-steps li) {
+    counter-increment: tfstep;
+    display: grid; grid-template-columns: 1.7em 1fr; gap: 0.6em;
+    align-items: start; margin: 0.42em 0; line-height: 1.42;
+    font-size: 0.92em;
+  }
+  :global(.prose .tf-steps li)::before {
+    content: counter(tfstep);
+    font-family: var(--ui, system-ui), sans-serif; font-weight: 700; font-size: 0.82em;
+    width: 1.7em; height: 1.7em; display: grid; place-items: center;
+    border-radius: 50%; background: var(--accent); color: var(--bg);
+  }
+
   /* pageBody: .prose holds a raw text node; proseBody: .prose holds <p> blocks. */
   :global(.prose.dropcap)::first-letter,
   :global(.prose.dropcap > p:first-of-type)::first-letter {

@@ -27,13 +27,14 @@ import re
 _AFFINITY: dict[str, dict[str, set[str]]] = {
     "drop-cap":   {"native": {"article"}, "allowed": set()},
     "pull-quote": {"native": {"article"}, "allowed": {"guided", "dialogue"}},
+    "stepped-list": {"native": {"tutorial"}, "allowed": {"guided", "article"}},
     # (the rest land as their reader support ships)
     "key-takeaways": {"native": {"guided"}, "allowed": {"article", "qa"}},
     "callout":       {"native": {"guided"}, "allowed": {"article", "qa"}},
 }
 
 # Reader support has shipped for these (engine won't emit a figure the reader can't draw).
-IMPLEMENTED: tuple[str, ...] = ("drop-cap", "pull-quote")
+IMPLEMENTED: tuple[str, ...] = ("drop-cap", "pull-quote", "stepped-list")
 
 # Density → spacing between text-figure pages (every Nth eligible page). 'off' disables.
 _PERIOD = {"off": 0, "sparse": 4, "normal": 3, "rich": 2}
@@ -74,6 +75,7 @@ def choose_text_figure(
     *,
     has_image: bool = False,
     density: str = DEFAULT_DENSITY,
+    steps: list[str] | None = None,
 ) -> dict | None:
     """Pick the text-figure for this page, or None.
 
@@ -81,9 +83,16 @@ def choose_text_figure(
     is deterministic and survives re-leveling/coast/repage. Images win the slot: if the
     page already shows a picture, no text-figure. Form-affinity is the hard gate; density +
     the node hash space the figures out and vary them across nodes.
+
+    `steps` (caller-derived, e.g. Renderer.derive_steps on a tutorial keyframe) short-
+    circuits into a stepped-list panel: it is the lesson's SKELETON, not decoration, so it
+    bypasses the density cadence — only images and form-affinity outrank it.
     """
     if has_image:
         return None
+    if steps and "stepped-list" in IMPLEMENTED and fits_form("stepped-list", form):
+        return {"kind": "stepped-list", "slot": "panel",
+                "payload": {"steps": [str(s) for s in steps][:5]}}
     period = _PERIOD.get(density, 0)
     if period == 0:
         return None

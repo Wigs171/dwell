@@ -71,9 +71,9 @@ export interface PageFigure {
 // A derived TEXT-figure resolved for a page (server: text_figures.choose_text_figure).
 // A "figure" generalizes to image-OR-text; this fills a slot on a no-image page.
 export interface TextFigureView {
-  kind: string;                 // 'pull-quote' | 'drop-cap' | … (TextFigureId subset implemented in the reader)
-  slot: string;                 // 'side' (float) | 'body' (CSS, e.g. drop-cap) | …
-  payload: { text?: string };   // pull-quote: the verbatim line; drop-cap: empty
+  kind: string;                 // 'pull-quote' | 'drop-cap' | 'stepped-list' | … (TextFigureId subset implemented in the reader)
+  slot: string;                 // 'side' (float) | 'body' (CSS, e.g. drop-cap) | 'panel' (inset block) | …
+  payload: { text?: string; steps?: string[] };   // pull-quote: the verbatim line; stepped-list: the derived moves; drop-cap: empty
 }
 
 // ---- Curated Paths (DWELL_PATHS.md) ----
