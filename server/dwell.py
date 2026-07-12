@@ -711,9 +711,16 @@ class PagePlan:
     protagonist: str = ""     # PATH page (story): the ONE held viewpoint the whole journey follows
     cast: str = ""            # PATH page (story): the planner's named CAST — story-people canon on
                               # every page, groundable even where the material never mentions them
+    instrument: str = ""      # PATH page (didactic): the lesson's ONE running worked example,
+                              # developed across pages, never swapped (p28; else "")
+    prot_card: str = ""       # PATH page (story): the planner's PROTAGONIST CARD — appearance /
+                              # manner / want in three strokes, riding every page like an image
+                              # model's character reference (p25; staged pipeline feeds it)
     mood: str = ""            # PATH page (story): this page's MOTIF, "name — gloss" — the emotional
                               # color of the scene (planner-assigned from the path's small palette)
     gate_weight: int = 1      # PATH gate: planner PAGE WEIGHT (1-3) — a weighted FINALE gets a fuller scene
+    spent: str = ""           # PATH page: wordings the story already used twice — never again
+                              # verbatim (rolling memory like journey: excluded from key())
     journey: str = ""         # PATH page: the running one-line-per-page log of what pages DID
                               # (excluded from key(): rolling memory — a re-render of the
                               # same beat must still hit its cache; the log only feeds forward)
@@ -745,6 +752,8 @@ class PagePlan:
             raw += "|c" + hashlib.sha1(self.canon.encode()).hexdigest()[:6]
         if self.mood:         # a page colored by a different motif is a different page
             raw += "|md" + hashlib.sha1(self.mood.encode()).hexdigest()[:6]
+        if self.instrument:   # a lesson taught on a different running example too
+            raw += "|in" + hashlib.sha1(self.instrument.encode()).hexdigest()[:6]
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -1140,11 +1149,29 @@ class PathNavigator(Navigator):
         self._visited_waypoints: set = set()    # waypoints visited ANYWHERE on this path (no reruns)
         self._density_eff = self.tween_density  # per-corridor density (distance-aware)
         self._corridor_wp: str | None = None    # this corridor's chosen side-encounter (or None)
+        # SPENT SAYINGS (p23) — the ANTI-sink: distinctive 6-grams the story has
+        # already used twice. A lecture vault repeats its author's formulas across
+        # many nodes' material, so each page met "the only cure for the problems…"
+        # fresh and quoted it again — the render has no memory of what earlier
+        # pages quoted, and a static don't-repeat rule can't beat that (data beats
+        # directives). Fed by observe_canon(); rides the journey frame as wordings
+        # never to repeat verbatim.
+        self._gram_counts: Counter = Counter()
+        self.spent_sayings: list[str] = []
         # CANON SINK (StreamDiffusion V2's sink tokens): established figures/elements,
         # first-seen order, pinned into every path page so the rolling tail/recap can't
         # rotate identities out of existence. Fed by observe_canon() after each render.
         self.canon: list[str] = []
         self._canon_word_pages: dict[str, int] = {}   # lone-word canon needs 2 pages
+        # p26 — each canonized figure's IDENTITY as first established on the page
+        # ("Lira" -> "tide-scribe"), so later pages can't re-cast them from vault
+        # material. First establishment wins and never changes; cast/protagonist
+        # names are skipped (the plan's cast line is authoritative for those).
+        # _pending_roles harvests the appositive at FIRST SIGHT of any name (a
+        # single-word name canonizes a page or two later — waiting until then
+        # would capture the identity from the flip page, not the establishing one).
+        self.canon_roles: dict[str, str] = {}
+        self._pending_roles: dict[str, str] = {}
         # OPENING VARIETY — the flip side of the sink: the sink keeps WHO/WHAT stable,
         # this keeps HOW each page ENTERS varied. Without it the sink's pinned figure
         # gets opened on every page ("Maren did X" ×N), which reads as the same idea
@@ -1218,6 +1245,12 @@ class PathNavigator(Navigator):
         self.plot_premise: str = ""
         self.plot_events: list[str] = []
         self.plot_costs: list[str] = []   # per-gate PRICES — lasting marks that persist
+        # THE PLAN GATE (r8) — structural tells (single-track plots, tidy full
+        # resolutions, strictly linear time) are decided at PLANNING time and
+        # cannot be fixed page by page. When enabled, one cheap check grades the
+        # adopted plot on subplot/open-resolution/nonlinearity and re-rolls ONCE
+        # on a hard fail. Observability, like the render gate_log.
+        self.plan_gate_log: list[dict] = []
         # THE CAST — the story's own named people (planner-declared, mid/high dream).
         # Why it exists: turns kept referencing UNNAMED story-figures ("her mentor",
         # "the Riders") that appear in NO gate's material — the render can't ground a
@@ -1226,6 +1259,13 @@ class PathNavigator(Navigator):
         # p14 finding). Named here, carried on every page as canon story-data, they
         # are as real to the render as the material's own figures.
         self.plot_cast: str = ""          # "Name — role; Name — role" (else "")
+        self.plot_instrument: str = ""    # p28 didactic: the lesson's ONE running
+                                          # worked example, held across pages (else "")
+        # THE PROTAGONIST CARD (p25) — a compact identity card (appearance / manner /
+        # want) the planner writes once, riding every page like an image model's
+        # character reference: thickens a thin protagonist and fights drift across
+        # a long path. Fed to the render by the STAGED pipeline only.
+        self.prot_card: str = ""          # "appearance: …; manner: …; want: …" (else "")
         # THE MOOD PALETTE — the path's few recurring motifs (home first), chosen
         # ONCE per path: randomness picks the PALETTE, never the page (per-page
         # random mood is whiplash — real stories run smooth, low-dimensional
@@ -1367,6 +1407,15 @@ class PathNavigator(Navigator):
     _CANON_META = {"Archivist", "Narrator", "Chronicler", "Scribe", "Author",
                    "Reader", "Editor", "Curator", "Recorder", "Storyteller"}
 
+    def _canon_line(self) -> str:
+        """The sink as the render sees it. p26: names carry their established
+        identity — "Lira (tide-scribe); Beacon Spire" — so a later page's material
+        can't quietly re-cast a figure the story already defined."""
+        if not _CANON_FIX or not self.canon_roles:
+            return "; ".join(self.canon)
+        return "; ".join(f"{c} ({self.canon_roles[c]})" if c in self.canon_roles
+                         else c for c in self.canon)
+
     def observe_canon(self, text: str) -> None:
         """Harvest ESTABLISHED elements from a rendered path page into the sink:
         capitalized runs (1-3 words) appearing at least twice, kept in first-seen
@@ -1374,6 +1423,24 @@ class PathNavigator(Navigator):
         so identities persist beyond the rolling tail/recap window."""
         if not text:
             return
+        # SPENT SAYINGS — count distinctive 6-grams across pages; one seen on a
+        # SECOND page becomes a spent wording (each page counts a gram once).
+        ws = re.findall(r"[a-z']+", text.lower())
+        page_grams = {tuple(ws[k:k + 6]) for k in range(max(0, len(ws) - 5))}
+        for g in page_grams:
+            if sum(1 for w in g if len(w) >= 5) >= 2:   # distinctive, not glue
+                self._gram_counts[g] += 1
+        spent, used = [], []
+        for g, c in self._gram_counts.most_common():
+            if c < 2:
+                break
+            if any(len(set(g) & set(k)) >= 5 for k in used):
+                continue                                # collapse overlapping grams
+            used.append(g)
+            spent.append(" ".join(g))
+            if len(spent) >= 4:
+                break
+        self.spent_sayings = spent
         runs = re.findall(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,2})\b", text)
         counts: dict[str, int] = {}
         order: list[str] = []
@@ -1401,6 +1468,24 @@ class PathNavigator(Navigator):
                 self.canon = [c for c in self.canon if not (c != r and c in r)]
                 self.canon.append(r)
         self.canon = self.canon[:10]
+        # p26 — identity capture. Harvest the appositive for EVERY name at first
+        # sight (pending), then promote when the name canonizes — so the ledger
+        # pins the ESTABLISHING page's identity, not the flip page's. Once set,
+        # a role never changes (identities hold as first established).
+        if _CANON_FIX:
+            _plan_names = {self.protagonist} | {
+                c.strip().split("—")[0].strip()
+                for c in (self.plot_cast or "").split(";") if c.strip()}
+            for r in order:
+                if r not in self._pending_roles and r not in _plan_names:
+                    role = _establishing_role(r, text)
+                    if role:
+                        self._pending_roles[r] = role
+            for c in self.canon:
+                if c not in self.canon_roles and c not in _plan_names:
+                    role = self._pending_roles.get(c) or _establishing_role(c, text)
+                    if role:
+                        self.canon_roles[c] = role
         # capture only the opening's DOORWAY GRAMMAR (first 4 words — "You felt
         # the…"), not its content: quoting objects back into the prompt keeps them
         # hot (priming) and re-seeds the very motif the list exists to rotate out
@@ -1564,7 +1649,16 @@ class PathNavigator(Navigator):
                       "the height the material supports: promise a procedure only "
                       "when the material actually holds one; on knowledge material, "
                       "promise the ability to explain, recognize, or reason about it>\n"
-                      "1. <lesson> || gain: <what the reader can now do> || pages: <1-3>\n"
+                      # p28 — the lesson's running INSTRUMENT: the didactic cast card.
+                      # Per-page invention was licensed; nothing held one ACROSS
+                      # pages — a new example every page instead of one thread.
+                      + ("INSTRUMENT: <ONE concrete running example the whole lesson "
+                         "builds on — a specimen, case, object, worked scenario, or ONE "
+                         "example-person the lessons follow (an Alice-and-Bob figure, "
+                         "never a story's hero), "
+                         "named plainly; \"none\" when the material can't hold one>\n"
+                         if _TUTOR_CARDS else "")
+                      + "1. <lesson> || gain: <what the reader can now do> || pages: <1-3>\n"
                       "2. <lesson> || gain: <what the reader can now do> || pages: <1-3>\n"
                       "(one numbered line per chapter, same count as the chapters given)")
             usr = (f"The journey's goal: {self.goal or '(none given)'}\n"
@@ -1578,7 +1672,11 @@ class PathNavigator(Navigator):
                      "GAIN is the ability it leaves behind, phrased as what the "
                      "reader can now do. Gains STACK: each lesson stands on the "
                      "gains before it and may use them freely, and the final lesson "
-                     "runs the whole promise end to end. PAGES is how long the reader "
+                     "runs the whole promise end to end."
+                     + (" Name the INSTRUMENT first — the one running example the "
+                        "lessons keep returning to and develop as the gains stack, "
+                        "so the course is one thread, not a new setup per page."
+                        if _TUTOR_CARDS else "") + " PAGES is how long the reader "
                      "should stay on this lesson: 1 for a quick move that lands in one "
                      "reading, 2 when it needs a worked example then practice, 3 for a "
                      "core skill the reader must sit with and drill — judge it by the "
@@ -1623,7 +1721,10 @@ class PathNavigator(Navigator):
             _who = ("INVENT the PROTAGONIST: a single viewpoint character of your own making "
                     "— a traveler, a witness, a seeker — who journeys through all these "
                     "places and meets everyone in them. Name them, and keep them the SAME "
-                    "person from first page to last, present in EVERY chapter. The chapters "
+                    "person from first page to last, present in EVERY chapter. Also INVENT "
+                    "the story's SETTING: one concrete time and place of your own choosing, "
+                    "anywhere that serves the premise — the material supplies ideas and "
+                    "figures, never the location. The chapters "
                     "may not obviously relate — that is the point; INVENT the narrative that "
                     "binds them into one story, the reasons and bridges a dreaming mind or a "
                     "good writer builds from any set of things. Each chapter's material is a "
@@ -1640,8 +1741,18 @@ class PathNavigator(Navigator):
                   "of a knowledge vault. FIRST decide whose eyes we follow, then plan it "
                   "around them. Reply in EXACTLY this format, nothing else:\n"
                   + _pline + "\n"
-                  "CAST: <the story's few other recurring people — 1 to 3, each as "
-                  "“Name — one-phrase role”, separated by “;”>\n"
+                  "CARD: <the protagonist's identity in three short strokes — "
+                  "appearance: …; manner: …; want: … — the same person on every page>\n"
+                  # p27 — cast entries grow from "Name — role" to a compact card:
+                  # pronoun (pins gender, vital for personified entities), want,
+                  # and bond (allegiance — the attribute material pressure flips).
+                  + ("CAST: <the story's few other recurring people — 1 to 3, each as "
+                     "“Name — role · she/he/they/it · wants <one thing> · bond: <their "
+                     "tie or allegiance in the story>”, separated by “;” — each the "
+                     "same person on every page>\n" if _CAST_CARDS else
+                     "CAST: <the story's few other recurring people — 1 to 3, each as "
+                     "“Name — one-phrase role”, separated by “;”>\n")
+                  +
                   "PREMISE: <ONE flowing sentence naming the SPECIFIC thing the protagonist "
                   "wants and the ONE central thing that most stands against it (a single "
                   "opposition, never a roster of names), drawn from the material — a plain "
@@ -1666,9 +1777,15 @@ class PathNavigator(Navigator):
                + (f"Figures available: {cast}\n" if cast else "")
                + "\nThe chapters, in order, each with its page's material:\n"
                + gates
-               + "\n\nRead all the chapters, then " + _who + " Then name the CAST: the few "
+               + "\n\nRead all the chapters, then " + _who + " Give the protagonist a "
+                 "CARD — how they look, how they carry themselves, and what they want, "
+                 "each a short concrete phrase. Then name the CAST: the few "
                  "other people this story keeps — each either a figure the material holds "
-                 "or one of your own making in the protagonist's life. Every person any "
+                 "or one of your own making in the protagonist's life. "
+                 + ("Give each their full card — role, pronoun, want, bond — these hold "
+                    "for the whole story, whatever else the material says about them. "
+                    if _CAST_CARDS else "")
+                 + "Every person any "
                  "turn involves must stand in the CAST or be the PROTAGONIST, and the "
                  "turns use their NAMES — never an unnamed figure a page cannot ground. "
                  + _moodline +
@@ -1690,7 +1807,14 @@ class PathNavigator(Navigator):
                  "above. The heavy, lasting PRICE belongs to the FALL and the CLIMAX; leave "
                  "the price light or blank for the establishing and rising chapters — do NOT "
                  "make every chapter a sacrifice. Prices that DO land persist — later chapters "
-                 "live with them. When the material offers "
+                 "live with them. When a chapter's material is an IDEA — a concept, a "
+                 "teaching, a principle — the turn makes that idea HAPPEN to the protagonist: "
+                 "events that enact it, a situation that proves it on their skin — never a "
+                 "scene of a wise figure explaining it. And when the material speaks in a "
+                 "named lecturer's or author's voice, that person is the SOURCE of the "
+                 "material, not a figure in this story: never place them, their lectures, or "
+                 "their name in a turn — translate what they say into the story's world. "
+                 "When the material offers "
                  "no people, the thing met is an idea, a limit, or an anomaly — use what the "
                  "material genuinely holds, and name only what it names. Chain the turns by "
                  "cause AND motive: each grows from what the last one did to the protagonist "
@@ -1717,6 +1841,8 @@ class PathNavigator(Navigator):
         premise = ""
         protagonist = ""
         cast = ""
+        card = ""
+        instrument = ""
         events = [""] * len(self.spine)
         costs = [""] * len(self.spine)
         weights = [1] * len(self.spine)
@@ -1735,6 +1861,18 @@ class PathNavigator(Navigator):
                 c = m.group(1).strip().strip("*").strip()
                 if c and c.lower() not in ("none", "n/a", "-"):
                     cast = c[:300]
+                continue
+            m = re.match(r"(?i)card\s*:\s*(.+)", line)
+            if m:
+                c = m.group(1).strip().strip("*").strip()
+                if c and c.lower() not in ("none", "n/a", "-"):
+                    card = c[:300]
+                continue
+            m = re.match(r"(?i)instrument\s*:\s*(.+)", line)
+            if m:
+                c = m.group(1).strip().strip("*").strip().strip('"')
+                if c and c.lower() not in ("none", "n/a", "-"):
+                    instrument = c[:200]
                 continue
             m = re.match(r"(?i)(?:premise|promise)\s*:\s*(.+)", line)
             if m:
@@ -1768,6 +1906,13 @@ class PathNavigator(Navigator):
                     events[k] = parts[0].strip()
                     if len(parts) > 1:
                         costs[k] = parts[1].strip().rstrip(".")
+                        # a light beat's "price: none" is NO price — stored
+                        # verbatim it becomes prompt data ("by this scene's end
+                        # none") and the p25 critic enforced it literally,
+                        # ordering landed costs REMOVED (cael price 2.0 → 0.0)
+                        if costs[k].lower() in ("none", "no price", "nothing",
+                                                "n/a", "-", "—", "none yet"):
+                            costs[k] = ""
         if not premise or not any(events):
             return False
         # A PLOTTED path must never walk goal-less: the ENTIRE narrative frame —
@@ -1789,17 +1934,85 @@ class PathNavigator(Navigator):
         if kind == "narrative":                   # the story's own named people + moods
             self.plot_cast = cast
             self.plot_moods = moods
+            self.prot_card = card                 # the p25 character reference
+        elif kind == "didactic":
+            self.plot_instrument = instrument     # p28 — the lesson's running example
         return True
 
+    def _plot_summary(self) -> str:
+        """The adopted plot as a compact plan sheet, for the plan gate to grade."""
+        lines = [f"PREMISE: {self.plot_premise}"]
+        if self.protagonist:
+            lines.append(f"PROTAGONIST: {self.protagonist}")
+        if self.plot_cast:
+            lines.append(f"CAST: {self.plot_cast}")
+        costs = self.plot_costs or [""] * len(self.plot_events)
+        for i, e in enumerate(self.plot_events):
+            c = costs[i] if i < len(costs) else ""
+            lines.append(f"{i + 1}. {e}" + (f"  (price: {c})" if c else ""))
+        return "\n".join(lines)
+
+    # THE PLAN GATE — three structural questions drawn from StoryScope's core
+    # AI-tells (2604.03136): AI plots are single-track (no subplots 79% vs 57%
+    # human), tidily resolved (protagonist-driven full resolution 69% vs 46%),
+    # and strictly linear (humans use flashback / delayed revelation). The check
+    # grades the PLAN, not prose — the one place these tells can be fixed cheaply.
+    _PLAN_GATE_SYS = (
+        "You audit a STORY PLAN for three structural qualities that separate human "
+        "fiction from formulaic plots. Grade the plan AS WRITTEN. Reply ONLY JSON:\n"
+        '{"subplot": 0|1|2, "resolution_open": 0|1|2, "nonlinearity": 0|1|2, '
+        '"evidence": {"subplot": "<quote or absence>", "resolution_open": "…", '
+        '"nonlinearity": "…"}}\n'
+        "subplot: 2 = a genuine secondary thread or a side-figure with their own "
+        "small arc runs alongside the main line; 1 = a hint of one; 0 = strictly "
+        "single-track.\n"
+        "resolution_open: 2 = the ending settles the central want but leaves a real "
+        "cost standing or a thread genuinely open — not everything is tidily "
+        "granted; 1 = mostly tidy; 0 = every thread closed, the want fully and "
+        "cleanly satisfied.\n"
+        "nonlinearity: 2 = the telling is not strict chronological order — a "
+        "flashback, a delayed revelation, a thing shown out of sequence; 1 = a "
+        "mild reordering; 0 = strictly first-event-to-last.\n"
+        "Quote the beat that earns each score, or name its absence.")
+
+    def _plan_gate_check(self, check) -> tuple[bool, dict]:
+        """Grade the adopted plot; return (hard_fail, verdict). A hard fail = 0 on
+        2+ of the three structural questions. `check(sysmsg, usr) -> str` is the
+        grading callback (a cheap cross-family judge, or the render engine)."""
+        try:
+            raw = check(self._PLAN_GATE_SYS, self._plot_summary()) or ""
+            m = re.search(r"\{.*\}", raw, re.S)
+            verdict = json.loads(m.group(0)) if m else {}
+        except Exception:
+            return False, {}                # check failed → don't block (preserve)
+        zeros = sum(1 for k in ("subplot", "resolution_open", "nonlinearity")
+                    if verdict.get(k) == 0)
+        return (zeros >= 2, verdict)
+
+    _PLAN_REROLL_NOTE = (
+        "\n\nA prior draft of this plan read as a formulaic single-track story. This "
+        "time make it structurally richer WITHOUT abandoning the arc above: let a "
+        "secondary thread or a recurring side-figure carry their own small arc "
+        "alongside the main line; let the ending settle the central want but leave "
+        "one real cost standing or one thread honestly open, rather than granting "
+        "everything cleanly; and consider revealing something out of order — a "
+        "thing withheld and disclosed later, or a moment recalled from before the "
+        "start. Keep every other instruction.")
+
     def ensure_plot(self, complete, kind: str = "narrative",
-                    dream: float = 0.5) -> bool:
+                    dream: float = 0.5, plan_gate: bool = False, check=None) -> bool:
         """Generate THE PLOT once, via `complete(sysmsg, usr) -> str` (the caller
         wraps its own LLM client — the navigator stays client-free). `dream` is the
         creativity dial at path start; it bands the narrative brief (factual tour /
         follow a real figure / invent a witness). Idempotent while the KIND matches;
         a form switch across the narrative/didactic boundary replans. Any failure
         keeps whatever plot exists; a plotless path falls back to beat-function-only
-        behavior."""
+        behavior.
+
+        THE PLAN GATE (r8, `plan_gate=True`, narrative only): after adopting, one
+        cheap structural check (`check` callback, or `complete` if none) grades the
+        plot; a hard fail re-rolls the plan ONCE with the failure fed back. Logged
+        to plan_gate_log. Off by default (referee before trusting)."""
         if len(self.spine) < 2:
             return False
         if self.plot_premise and self.plot_kind == kind:
@@ -1811,10 +2024,40 @@ class PathNavigator(Navigator):
                 # drop the mechanical fallback so the render tells it straight.
                 if kind == "narrative" and dream < 0.34:
                     self.protagonist = ""
+                # THE PLAN GATE — narrative only (didactic has no subplot/arc
+                # structure), and only above the factual-tour band (a low-dream
+                # tour is single-track by design). One re-roll, capped.
+                if plan_gate and kind == "narrative" and dream >= 0.34:
+                    hard_fail, verdict = self._plan_gate_check(check or complete)
+                    self.plan_gate_log.append({"stage": "check", **verdict})
+                    if hard_fail:
+                        try:
+                            reroll = complete(sysmsg, usr + self._PLAN_REROLL_NOTE) or ""
+                            if self.adopt_plot(reroll, kind):
+                                _, v2 = self._plan_gate_check(check or complete)
+                                self.plan_gate_log.append(
+                                    {"stage": "reroll", **v2})
+                        except Exception:
+                            pass
                 return True
         except Exception:
             pass
         return bool(self.plot_premise)
+
+    def _strip_spent(self, chunks: list[str]) -> list[str]:
+        """Remove sentences containing a SPENT saying from incoming material —
+        the render cannot re-quote what it never sees (the warning-line
+        approach provably lost: naming the words primed them; this is the
+        feed-filter pattern that fixed the biography leak)."""
+        if not self.spent_sayings:
+            return chunks
+        out = []
+        for c in chunks:
+            sents = re.split(r"(?<=[.!?])\s+", c)
+            keep = [s for s in sents
+                    if not any(ph in s.lower() for ph in self.spent_sayings)]
+            out.append(" ".join(keep) if keep else c)
+        return out
 
     def _page_protagonist(self) -> str:
         """The protagonist a PAGE should carry. A didactic path carries NONE —
@@ -1924,12 +2167,19 @@ class PathNavigator(Navigator):
             came_from=self.came_from, steer_bucket=self.steer_bucket(),
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=False,
-            arc_outline=self._outline(self.i), canon="; ".join(self.canon),
+            arc_outline=self._outline(self.i), canon=self._canon_line(),
             avoid_openings=" / ".join(self.recent_openings), waypoint=wp,
             telling=self.telling_line, correspondents=self.correspondents_line,
             protagonist=self._page_protagonist(),   # the detour stays in their eyes
             cast=self.plot_cast,                # ...with the story's people still real
+            instrument=self.plot_instrument,    # p28 didactic running example
+            prot_card=self.prot_card,           # ...and the protagonist's card (p25)
+            plot_kind=self.plot_kind,           # p24b — tweens never carried the kind,
+                                                # so didactic corridors kept the story-
+                                                # shaped task ("the traveler" register
+                                                # leak p21 thought it had killed)
             mood=self._mood_for(self.i),        # ...under the departing beat's color
+            spent=" · ".join(self.spent_sayings),
             journey="; ".join(self.journey_log[-12:]),   # ...and the carry-forward context
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
@@ -1997,7 +2247,7 @@ class PathNavigator(Navigator):
             came_from=self.came_from, steer_bucket=self.steer_bucket(),
             steer_text=self.steer_text, goal=self.goal, tween_t=t,
             arc=f"tween {k} · {ta} → {tb}", toward=tb, next_locked=locked,
-            arc_outline=self._outline(self.i), canon="; ".join(self.canon),
+            arc_outline=self._outline(self.i), canon=self._canon_line(),
             avoid_openings=" / ".join(self.recent_openings),
             telling=self.telling_line, correspondents=self.correspondents_line,
             # the road stays the protagonist's too — without these the endpoint
@@ -2005,7 +2255,11 @@ class PathNavigator(Navigator):
             # drifted into anonymous vignettes about bystanders (Cael p14: a whole
             # tween page about "Joren", the protagonist absent).
             protagonist=self._page_protagonist(), cast=self.plot_cast,
+            instrument=self.plot_instrument,
+            prot_card=self.prot_card,
+            plot_kind=self.plot_kind,           # p24b — see _plan_tween_waypoint
             mood=self._mood_for(self.i),
+            spent=" · ".join(self.spent_sayings),
             journey="; ".join(self.journey_log[-12:]),
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
@@ -2048,16 +2302,20 @@ class PathNavigator(Navigator):
         plan.next_locked = bool(plan.toward) and (not self.confluence
                                                   or self.tween_density <= 0)
         plan.arc_outline = self._outline(j if j is not None else self.i)   # tier 2
-        plan.canon = "; ".join(self.canon)      # the sink rides every path page
+        plan.canon = self._canon_line()         # the sink rides every path page
         plan.telling = self.telling_line        # the committed tense/person/cast
         plan.correspondents = self.correspondents_line   # epistolary letter-writers
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
         plan.journey = "; ".join(self.journey_log[-12:])   # what pages ACTUALLY did
+        plan.spent = " · ".join(self.spent_sayings)   # gate data (not prompted)
+        plan.chunks = self._strip_spent(plan.chunks)  # ...and filtered from the feed
         plan.protagonist = self._page_protagonist()   # held viewpoint (never didactic)
         if self.plot_premise:                   # THE PLOT rides every path page:
             plan.plot = self.plot_premise       # premise everywhere; the gate's own
             plan.plot_kind = self.plot_kind
             plan.cast = self.plot_cast          # the story's people, canon on every page
+            plan.instrument = self.plot_instrument   # p28 didactic running example
+            plan.prot_card = self.prot_card     # ...and the protagonist's card (p25)
             plan.mood = self._mood_for(j)       # this beat's motif colors its pages
             # A DWELL page is a SECOND page on a gate the keyframe already staged — its
             # event has HAPPENED, so it rides "already happened" (count it done) and the
@@ -2151,6 +2409,8 @@ class PathNavigator(Navigator):
             c.trail = list(self.trail)
             c.visited = dict(self.visited)
             c.canon = list(self.canon)
+            c.canon_roles = dict(self.canon_roles)
+            c._pending_roles = dict(self._pending_roles)
             c.gates_cleared = list(self.gates_cleared)
             c._pool = list(self._pool)
             c.commit(copy.copy(plan))
@@ -2232,7 +2492,77 @@ or code."""
 # artifacts diffusion sometimes leaves (the garbled-sentence failure mode we saw).
 # Bumped whenever the render PROMPT is overhauled — folded into cache_key so the
 # persistent tween cache never replays pages written under a retired prompt style.
-_PROMPT_V = "p21"  # p3 = didactic plot kind + journey log + example-on-first-beat-only;
+_PROMPT_V = "p27"   # (p28/p28b features exist but BOTH default OFF after negative
+#                     referees — the live frame is p27; opting a p28 flag on should
+#                     come with an explicit --pv tag in the harness.)
+#                   # p3 = didactic plot kind + journey log + example-on-first-beat-only;
+#                    p28 = REGISTER VARIETY (STY_FIG_001, the #1 measured humanlikeness
+#                          tell: figurative density 4/4 — plain naming as a deliberate
+#                          stroke among the figures; user: "reads well and like a person
+#                          wrote it", no house style to protect) behind DWELL_FIG_VARIETY
+#                          + didactic INSTRUMENT card (the cast-card system applied to
+#                          tutorials: planner names ONE running worked example, held and
+#                          developed across pages — per-page invention was licensed but
+#                          nothing held the thread) behind DWELL_TUTOR_CARDS.
+#                    p27 = CAST CARDS (user-proposed; the continuity autopsy found every
+#                          flipped figure was planner-cast with a thin "Name — role"
+#                          entry already riding every page — data present, too thin):
+#                          planner CAST contract → compact card per figure (role ·
+#                          pronoun · want · bond), cast line gets the prot card's HOLD
+#                          phrasing, prot card extends beyond staged to single-pass.
+#                          Behind DWELL_CAST_CARDS (default on). Referee: same 7 seeds
+#                          as p26, compared against the _cfix (p26) arm.
+#                    p26 = CONTINUITY fix (fresh p25a corpus's worst criterion, 0.47/2):
+#                          canon sink carries each figure's established IDENTITY
+#                          ("Lira (tide-scribe)") + "held to the identity the story
+#                          gave them" line, so material can't re-cast a figure; the
+#                          naming demand made person-aware (first/second-person
+#                          stories were breaking person to satisfy "call by NAME").
+#                          Behind DWELL_CANON_FIX (default on). See _CANON_FIX.
+#                    p25a = r8 MORALIZING-CODA fix (StoryScope's #1 render tell: narrator
+#                          states the theme, Dwell 70% vs 52% human). Three layers:
+#                          (1) finale prompt lever ("the ending trusts the reader — land on
+#                          image/action, what it means is the reader's to feel"); (2) a
+#                          story-form-finale coda detector in the PAGE GATE (_moralizing_coda)
+#                          → surgical repair to end on the last concrete image; (3) eval-side
+#                          lesson_stated in score_story L1. Concept-level, pink-elephant-safe.
+#                    p24d = the gate repair is now SURGICAL and style-aware
+#                          (_surgical_repair: voice card + rework-only-the-named-
+#                          sentences + anti-slop) — the old 3-line style-blind
+#                          repair rewrote whole pages at effort=low and one stock
+#                          token could garble a page (the MPH single collapses).
+#                    p24c = the journey mood line carries the mood NAME only — its gloss
+#                          ("a string tightening") replicated verbatim as page imagery
+#                          (the p16 corpus-blurb lesson again); + slop lexicon added to
+#                          the gate/pass-B detectors as detect-and-remove repairs.
+#                    p24b = tween plans now CARRY plot_kind — the p21 didactic-corridor
+#                          task was gated on plan.plot_kind but tweens never received it,
+#                          so tutorial waypoint bridges still ran the story-shaped task
+#                          and invented "the traveler" (found by the p25 prompt dumps).
+#                          Enacted-form prompts are byte-identical to p24.
+#                          (p25 = the STAGED PIPELINE, versioned separately by
+#                          Renderer._STAGED_V — see _render_staged.)
+#                    p24 = THE PAGE GATE + FEED FILTER — spent sayings now (a) stripped from
+#                          incoming material at the sentence level (can't quote what you never
+#                          see) and (b) detected post-render by Renderer._gate_page, which
+#                          feeds a short repair list to ONE refine-in-place call (also fixes
+#                          doubled words, future-tense slips, source-voice cites, and a
+#                          missing protagonist on enacted gates). The p23 warning line was
+#                          REMOVED — naming the exact words primed their repetition.
+#                    p23 = SPENT-SAYINGS SINK — the navigator counts distinctive 6-grams
+#                          across committed pages; any wording used twice rides the journey
+#                          frame as never-verbatim-again (the Hall-formula stamp: the same
+#                          aphorism lives in MANY nodes' material, so only cross-page MEMORY
+#                          can stop the render re-quoting it — prompts alone provably lost).
+#                          Also: "future" removed from story tenses (the prophecy story).
+#                    p22 = LECTURE-VAULT fixes (MPH findings, vault-neutral): (a) SOURCE-VOICE
+#                          firewall — a named lecturer/author in the material is its source,
+#                          never a story figure (planner beats had "shares Hall's lecture");
+#                          (b) EMBODY ideas — a concept gate's turn happens TO the protagonist
+#                          as events, never a wise figure explaining (the mentor-museum tour);
+#                          (c) high-dream INVENTS the story's own setting (kills the
+#                          chamber-corridor monoculture); (d) aphorisms rendered in the
+#                          story's words, never verbatim (Hall formulas stamped 3+ pages)
 #                    p21 = DIDACTIC CORRIDORS — bridge/waypoint tasks were story-shaped for
 #                          all forms; after p20 emptied the tutorial protagonist their
 #                          fallback invented "the traveler" as a character (artc page-4
@@ -2797,7 +3127,11 @@ _FORM_EXAMPLES = {
 # Expository forms (tutorial=2nd-present, guided/qa/brief, spoken forms, chronicle=
 # past annals) have their tense fixed by the form itself and ignore the telling.
 _FORM_TELLING = {
-    "story":      {"tenses": ("past", "present", "future"),
+    # "future" was a legal story tense and a path that drew it narrated an
+    # ENTIRE story as prophecy ("Lira will step… the machine will hum") — the
+    # tense-hold discipline faithfully serving an unreadable register, and the
+    # structural judge scored it 93, blind. Real books narrate past or present.
+    "story":      {"tenses": ("past", "present"),
                    "persons": ("third person", "first person", "second person")},
     "case":       {"tenses": ("past", "present"),
                    "persons": ("third person", "second person", "first person")},
@@ -3183,6 +3517,237 @@ def _strip_tail_echo(page: str, tail: str) -> str:
 _SOFT_STRUCT = re.compile(r"^\s*(#{1,6}\s|[—–\-*•>]\s*|\d+[.)]\s)")
 
 
+# --- moralizing coda (StoryScope's #1 remaining AI-tell) ----------------------
+# The narrator STATES the story's theme at the very end (Dwell 70% vs 52% human,
+# frontier AI 100%). This is the runtime port of the eval-side lesson_stated
+# detector (evals/score_story.py — keep the two aligned): a thematic-summary
+# close = a lesson-verb clause, a named lesson/moral, an "of all who … the -est"
+# comparative, a not-X-but-Y aphorism, or a theme-noun pronounced as a general
+# truth. Used by the PAGE GATE on story-form finales only.
+_CODA_THEME = (
+    r"love|grief|hope|loss|truth|freedom|courage|faith|memory|memories|time|life|"
+    r"death|fear|home|silence|sacrifice|forgiveness|meaning|purpose|destiny|fate|"
+    r"sorrow|joy|peace|wisdom|longing|belonging|redemption|grace|mercy|justice|"
+    r"power|beauty|change|journey|lesson|price|cost|heart|soul|world|past|future|"
+    r"light|darkness|kindness|cruelty|trust|betrayal|regret|guilt|shame|pride|"
+    r"honou?r|dignity|survival|endurance|patience|understanding|desire|ambition")
+_CODA_LESSON = (
+    r"learned|learnt|understood|realized|realised|knew|discovered|grasped|"
+    r"came to see|came to understand|came to know|understands|realizes|realises|"
+    r"knows now|taught (?:her|him|them|us|me|it)")
+_CODA_META = re.compile(
+    r"\blesson\s*:|\*lesson\*|\bthe (?:lesson|moral)\b|\bwhat it (?:all )?meant\b|"
+    r"\bwhat (?:really )?mattered\b|\bthe (?:real |whole )?(?:truth|point|meaning) "
+    r"(?:was|is)\b|\bof all (?:who|that|those)\b[^.?!]{0,70}\b\w{3,}est\b|"
+    r"\bthis was what\b", re.I)
+_CODA_LEARNED = re.compile(rf"\b(?:{_CODA_LESSON})\b[^.?!]{{0,55}}\bthat\b", re.I)
+_CODA_NOTBUT = re.compile(r"\bnot (?:about |merely |just |simply |only )?[\w'-]+,? but\b", re.I)
+_CODA_GNOMIC = re.compile(
+    rf"^(?:perhaps |maybe |and so,? |in the end,? |but )?(?:the |a )?(?:{_CODA_THEME})\b\s+"
+    r"(?:(?:is|was|means|meant|is not|isn't)\s+(?:not |always |never |only |nothing|"
+    r"everything|a |an |the |what |how |where |when |to )"
+    r"|would always|would never|never (?:truly |really )?(?:dies|ends|leaves|fades)"
+    r"|always (?:returns|remains|wins))", re.I)
+
+
+# referee toggle: DWELL_CODA_FIX=0 disables BOTH the finale prompt lever and the
+# gate coda repair, for a same-seed A/B (default on). Not a product knob.
+_CODA_FIX = os.environ.get("DWELL_CODA_FIX", "1") != "0"
+# DWELL_ASIDE_FIX=1 enables the mid-story thematic-commentary gate repair (the
+# coda fix's sibling — see _thematic_aside). DEFAULT OFF: the 2026-07-10 referee
+# (7 same-seed configs) showed it halves the mechanical tell (8→4 fires) but does
+# NOT move the instrument — SIT_MET_303 flat, P(human) Δ −0.007 (swamped by
+# Mercury base-render variance). Consistent with the fresh-corpus SHAP: mid-story
+# commentary is a rank-8 tell, not the #1 lever (figurative density is). Built +
+# refereed + kept behind the flag; a generation-time prompt lever (not post-hoc
+# repair) would be the stronger next design, since Mercury re-generates asides.
+_ASIDE_FIX = os.environ.get("DWELL_ASIDE_FIX", "0") == "1"
+# DWELL_CANON_FIX=0 disables the p26 CONTINUITY fix for a same-seed A/B (default
+# on). REFEREE VERDICT (2026-07-11, 7 same-seed worst-continuity configs):
+# continuity mean +0.33 (2/6 up, 0 regressed), judge flat (−0.6, no dilution).
+# Person-aware naming won its cases (pyth-129 0→1, artc-117 0→1; the mechanical
+# person-break peek: 1→0). THE MODAL SHIFT: OFF-arm zeros were 5/7 character-
+# identity flips; ON-arm zeros contain NONE — the failures moved to the next
+# strata: OBJECT/state tracking (Moon Shard placed yet still carried; crystal vs
+# ember) and GHOST figures (Oren Quill, unestablished on p9). Continuity is a
+# stacked criterion; this fixed its top layer and exposed the next (the coda
+# lesson again). The fix targets the fresh p25a corpus's worst craft criterion
+# (continuity 0.47/2, 16/17 stories ≤1; 2026-07-10 weakness map). Two parts: (1) the canon
+# sink carries each established figure's IDENTITY, not just the name — bare names
+# let a later page's material re-cast a figure (dota-313: Luna, the shrine's
+# sentinel on p3, leads the attacking horde on p4 because her vault page says
+# Dark Moon warrior); (2) person-aware NAMING — the p17 "call the protagonist by
+# NAME" demand and a first/second-person telling are contradictory instructions,
+# and Mercury resolves them by stepping into third person for a sentence
+# (pyth-405: "Marsilio Ficino opened the vellum" inside an "I" story) — perfect
+# named_on_page, broken continuity. The name demand must live INSIDE the person.
+_CANON_FIX = os.environ.get("DWELL_CANON_FIX", "1") != "0"
+# DWELL_CAST_CARDS=0 disables the p27 CAST CARDS for a same-seed A/B (default
+# on). REFEREE VERDICT (2026-07-11, same 7 seeds, p25a→p26→p27 ladder):
+# continuity mean 0.14 → 0.33 → 0.40 (monotone, small n: 7/6/5 — two files'
+# story-level judge calls noncomply repeatedly); judge 81.4 → 80.4 → 82.1 (p27
+# best, no dilution). Planner card-compliance 7/7 on first try. THE MODE CENSUS:
+# identity/allegiance flips = ZERO in all 14 p26+p27 stories (5/7 in p25a) —
+# Luna, carded "bond: mentor and friend to Kalen", held all 26 mentions. The
+# remaining zeros are the NEXT strata: GHOST FIGURES (Oren Quill, Rhasta/
+# Nevermore/Doom — render-invented, unreconciled) and OBJECT/STATE drift (the
+# lever's function flipping, Luna's armor/wings appearance). COUNTER-SIGNAL:
+# the p27 arm fingerprints lower on P(human) (mean 0.255 vs p26 0.638, n=7,
+# rater-sensitive) — consistency machinery may read "tidier"/more AI (same
+# direction as the staged-pipeline finding); weigh on a bigger sweep. The
+# continuity autopsy's decisive datum (2026-07-10): EVERY figure that
+# flipped identity in the fresh corpus was a planner-cast member whose thin
+# "Name — role" entry already rode every page — Luna ("ex-Dark Moon Order
+# warrior") still led the attacking horde; "They Don't Know About Us" ("secret
+# confidant", no pronoun) flipped gender mid-story. The data was present; it was
+# too thin to resist material pressure. So: the planner's CAST contract grows to
+# a compact card per figure (role · pronoun · want · bond), the cast line adopts
+# the prot card's HOLD phrasing, and the p25 protagonist card (staged-only until
+# now) rides single-pass too. Emergent figures stay the canon ledger's job.
+_CAST_CARDS = os.environ.get("DWELL_CAST_CARDS", "1") != "0"
+# DWELL_FIG_VARIETY=0 disables the p28 register-variety lever (default on).
+# The fresh-corpus SHAP's #1 page-local humanlikeness tell is STY_FIG_001
+# Figurative Device Density (−0.94; Haiku rates our worst stories 4/4 — every
+# feeling a bodily metaphor, every fact a simile; StoryScope: humans plainly
+# NAME feelings 29% vs AI 8%). User's criteria (2026-07-11): "reads well and
+# like a person wrote it with genuine creativity" — so the lever is VARIETY,
+# never a ban: plain statement as a deliberate stroke among the figures.
+# REFEREE VERDICT (2026-07-11, 5 same-seed worst-density configs): mechanical
+# simile markers −30% (5.57→3.92/1kw, 4/5 down — real surface trim) BUT the
+# Haiku instrument flat (STY_FIG_001 4→4 on four, 4→3 on one: the texture stays
+# metaphor-saturated below the marker level) and judge mildly negative (mean
+# −3.8, 3/5 down). Same shape as the aside fix: proxy moves, instrument doesn't
+# → DEFAULT OFF. The tell is texture-deep; one frame line doesn't restructure
+# it. Stronger candidates: a register plan (planner assigns plain-vs-figured
+# pages like moods) or a gate detector on figure pile-ups.
+_FIG_VARIETY = os.environ.get("DWELL_FIG_VARIETY", "0") == "1"
+# DWELL_TUTOR_CARDS=0 disables the p28 didactic INSTRUMENT card (default on) —
+# the cast-card system applied to tutorials (user question, 2026-07-11). The
+# didactic creativity directive licenses inventing "TEACHING instruments" PER
+# PAGE but nothing holds one ACROSS pages — a new example each page instead of
+# one developed thread (the tutorial weakness map: connected 1.0, busywork).
+# The planner now names ONE running instrument for the whole lesson (or none);
+# the render develops it page over page, never swapping it for a new one.
+# REFEREE VERDICT (2026-07-11, 4 same-seed pairs): NEGATIVE as built — judge
+# off→on mean 87.5→84.75 with one crater (bio 95→78: stays_on_promise/connected/
+# progression/promise_kept all 2→0). Root cause = ANOTHER RULE COLLISION (the
+# session's recurring disease): the "returned to on EVERY page" instrument hold
+# fights the SYLLABUS LOCK, and the promise loses. The thread itself works
+# (Mona Lisa on 11/14 pages) — the HOLD is too strong. DEFAULT OFF pending the
+# redesign: subordinate the instrument to the syllabus ("the running example
+# serves the promise — return when the lesson does"), or planner-side placement
+# (assign which lessons the instrument appears in, like moods). The p28b
+# Alice/Bob exception (user call) stays in the code for that redesign.
+_TUTOR_CARDS = os.environ.get("DWELL_TUTOR_CARDS", "0") == "1"
+# p28b — does an instrument name an example-PERSON? (the Alice/Bob exception,
+# user call: one carded figure is licensed as a worked example in a tutorial)
+_INST_PERSON = re.compile(r"named [A-Z]|who|person|apprentice|student|"
+                          r"novice|character|figure", re.I)
+
+
+def _establishing_role(name: str, text: str) -> str:
+    """The identity a page gives a figure at first mention — the appositive next
+    to the name ("Lira, a tide-scribe of the Anchorites"), or the "a gaunt figure
+    named Brine" construction. Lowercase-led phrases only (a capitalized follower
+    is usually another name, not a role); ≤7 words. "" when the page never says
+    who they are — a later page may."""
+    i = text.find(name)
+    if i < 0:
+        return ""
+    seg = text[max(0, i - 100):i + len(name) + 120].replace("\n", " ")
+    n = re.escape(name)
+    # role phrases START lowercase (a capitalized opener is usually another name)
+    # but may CONTAIN proper nouns ("tide-scribe of the Anchorites")
+    _R = r"[a-z][A-Za-z '’\-]{3,60}?"
+    m = (re.search(rf"\b(?:a|an|the)\s+({_R})\s+(?:named|called)\s+{n}\b", seg)
+         or re.search(rf"\b{n},\s+(?:a|an|the|her|his|their|its)\s+({_R})\s*[,.;:—]", seg)
+         or re.search(rf"\b{n}\s*—\s*({_R})\s*[—,.;]", seg))
+    if not m:
+        return ""
+    role = " ".join(m.group(1).split()[:7]).strip(" '’-")
+    role = re.sub(r"^(?:a|an|the)\s+", "", role)
+    return role if len(role) >= 4 else ""
+
+
+def _moralizing_coda(text: str) -> str:
+    """Return the matched tell-tags (";"-joined) if the FINAL sentences state the
+    theme, else "". Looks only at the last ~4 sentences (a coda is terminal)."""
+    sents = [x.strip() for x in re.split(r"(?<=[.!?])\s+", text.strip()) if x.strip()]
+    close = sents[-4:]
+    if not close:
+        return ""
+    low = " ".join(close).lower()
+    hits = []
+    if _CODA_LEARNED.search(low):
+        hits.append("learned-that")
+    if _CODA_META.search(low):
+        hits.append("meta-lesson")
+    if _CODA_NOTBUT.search(low):
+        hits.append("not-but")
+    if any(_CODA_GNOMIC.match(st.strip()) for st in close):
+        hits.append("gnomic")
+    return ";".join(hits)
+
+
+# ── mid-story thematic commentary (StoryScope SIT_MET_303/501 — the narratorial-
+# theme tell). The coda fix reaches only the FINALE's terminal statement; this
+# reaches the BODY: a page that steps out of the scene to pronounce a general
+# truth, either in the narrator's own voice or as dialogue-as-philosophy. Fresh
+# p25a SHAP (2026-07-10) ranks this family a real top-10 tell (SIT_MET_303
+# |shap|≈0.99). Precision-tuned like the coda: an ATTRIBUTED clause ("he writes
+# that number is the substance of the cosmos") is the MATERIAL's own content on a
+# concept vault, NOT a narratorial life-lesson — excluded, or the detector would
+# strip legitimate doctrine. Reuses _CODA_THEME (the universal-theme vocabulary).
+_ASIDE_GNOMIC = re.compile(
+    rf"\b(?:the |a )?(?:{_CODA_THEME})\b\s+"
+    r"(?:(?:is|was|are|were|means?|meant|remains?|becomes?)\s+"
+    r"(?:not |always |never |only |merely |but |nothing |everything |a way |a kind |"
+    r"the |what |how |where |the same |less |more )"
+    r"|would always|would never|can never|never truly|always (?:returns|remains|wins|comes))",
+    re.I)
+_ASIDE_APHORISM = re.compile(       # "[theme] is not X but Y" — needs a theme subject
+    rf"\b(?:the |a )?(?:{_CODA_THEME})\b\s+(?:is|was|are|were|means?|meant|becomes?)\s+"
+    r"(?:not|no|never|merely|just|simply|only)\b[^.?!]{0,50}\bbut\b", re.I)
+_ASIDE_KNEW = re.compile(
+    rf"\b(?:knew|realized|realised|understood|saw)\b[^.?!]{{0,30}}\b(?:that )?"
+    rf"(?:the |a )?(?:{_CODA_THEME})\b\s+(?:is|was|are|were|would|could)", re.I)
+_ASIDE_ATTRIB = re.compile(         # attribution -> reported doctrine, not a tell
+    r"\b(?:writes?|wrote|says?|said|argues?|argued|claims?|claimed|believes?|"
+    r"believed|teaches?|taught|holds?|held|insists?|declares?|proposes?|asks?|"
+    r"the (?:claim|notion|idea|thought|belief|doctrine|view|theory))\b\s+(?:that\s+)?",
+    re.I)
+_ASIDE_DIALOGUE = re.compile(r'[“"][^”"]{6,}[”"]')
+
+
+def _thematic_aside(text: str) -> str:
+    """';'-joined tell tags if the page steps out of the scene to pronounce a
+    general truth (narratorial aside or dialogue-as-philosophy), else "". Scans
+    the whole page; the finale's terminal coda is handled by _moralizing_coda."""
+    hits: list[str] = []
+    for s in re.split(r"(?<=[.!?])\s+", text.strip()):
+        s = s.strip()
+        if not s:
+            continue
+        if _ASIDE_DIALOGUE.search(s):
+            q = " ".join(re.findall(r'[“"]([^”"]+)[”"]', s))
+            if _ASIDE_GNOMIC.search(q) or _ASIDE_APHORISM.search(q):
+                hits.append("dialogue-philosophy")
+            continue
+        if _ASIDE_ATTRIB.search(s):
+            continue                        # reported doctrine = material, not a tell
+        if _ASIDE_GNOMIC.search(s):
+            hits.append("narrator-gnomic")
+        elif _ASIDE_KNEW.search(s):
+            hits.append("narrator-aside")
+        elif _ASIDE_APHORISM.search(s):
+            hits.append("narrator-aphorism")
+    seen, out = set(), []
+    for h in hits:
+        if h not in seen:
+            seen.add(h); out.append(h)
+    return ";".join(out)
+
+
 def _soften_line_breaks(text: str) -> str:
     """Collapse one-sentence-per-line drift. Mercury intermittently ends every sentence
     with a markdown hard break ('  \\n') inside what should be a flowing paragraph; the
@@ -3213,6 +3778,15 @@ class Renderer:
                  language: str = DEFAULT_LANGUAGE, mercury_key: str | None = None):
         self.topic = topic
         self.dry = dry
+        self.gate_log: list[dict] = []   # PAGE GATE repairs applied (observability)
+        # p25 — THE STAGED RENDER PIPELINE (draft → contract check → polish), the
+        # text version of the architecture that won image editing (reasoner-in-front
+        # + maskless in-context edits). Off by default; flip via the attribute or
+        # DWELL_STAGED=1. `polish_strength` is the pass-C edit-strength dial (0..1:
+        # surgical-only → free re-voicing; events always fixed).
+        self.staged = os.environ.get("DWELL_STAGED", "") == "1"
+        self.polish_strength = 0.5
+        self.stage_log: list[dict] = []  # per-page pass telemetry (observability)
         self.vault_voices = dict(vault_voices or {})   # vault-shipped personas
         self.set_voice(voice)
         self.set_level(level)
@@ -3357,6 +3931,9 @@ class Renderer:
         _PROMPT_V busts the persistent cache when the render prompt itself is overhauled
         (v2 = the 2026-07 slim rewrite: positive craft rules + tail self-check)."""
         parts = [_PROMPT_V, self.voice_id]
+        if self.staged:   # staged pages are a different pipeline's output — never
+            parts.append( # let them share cached pages with single-pass renders
+                f"stg{self._STAGED_V}-{int(round(self.polish_strength * 10))}")
         if self.form != DEFAULT_FORM:
             parts.append(self.form_id)
         if self.level != DEFAULT_LEVEL:
@@ -3386,6 +3963,39 @@ class Renderer:
         not by leaning the ending toward a predicted next page the reader may skip."""
         if self.dry:
             return self._dry(plan)
+        # p25 — the STAGED pipeline (draft → contract check → polish) takes over
+        # plotted path pages when the flag is on; free-wander pages keep single-pass.
+        if self.staged and plan.goal:
+            return self._render_staged(plan, tail, recap, on_stream=on_stream,
+                                       diffusing=diffusing)
+        parts = self._prompt_parts(plan, tail, recap)
+        system, user = parts["system"], parts["user"]
+        # Mercury (diffusion) occasionally "starves" the answer and returns an empty
+        # completion — most often on the densest prompts (e.g. the scholar level). Retry
+        # once at a LOWER reasoning effort (what the empty-completion error advises) so a
+        # transient miss self-heals instead of surfacing as "[render failed]".
+        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)   # dream warms sampling too
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                self.cost_tracker.check_budget()
+                text, in_tok, out_tok = self._complete(
+                    system, user, on_stream=on_stream, diffusing=diffusing,
+                    effort=("low" if attempt else None), temperature=temp)
+                self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                              model=self.model, is_sub_call=True)
+                return self._gate_page(
+                    _soften_line_breaks(_strip_tail_echo(text, tail)), plan)
+            except Exception as exc:
+                last_exc = exc
+        return f"[render failed: {last_exc}] {plan.material[:200]}"
+
+    def _prompt_parts(self, plan: PagePlan, tail: str, recap: str) -> dict:
+        """Build the page prompt and return it in PARTS, so both render paths share
+        one assembly: single-pass uses `system`/`user` (byte-identical to the pre-p25
+        prompt); the staged pipeline recombines the components — `user_core` (context +
+        journey + material + task, no style) + `persona` for the pass-A draft, and
+        `rules`/`axes`/`level_block`/`lang_block` for the pass-C polish."""
         # TWEEN position phrase — a tween is a MOTION frame between two keyframes; where it
         # sits in the run (early / crossover / arriving) shapes how it reads.
         _ta = plan.headings[0] if plan.headings else plan.title
@@ -3507,15 +4117,33 @@ class Renderer:
                              "first person": f"the “I” is {plan.protagonist}",
                              "third person": f"stay close on {plan.protagonist}"}.get(
                                  _pn, f"the story is {plan.protagonist}'s")
+                    # p26 — the naming demand lives INSIDE the held person. The
+                    # person-blind "call by NAME" and a first/second-person telling
+                    # were contradictory, and the model resolved them by stepping
+                    # into third person for a sentence (pyth-405: "Marsilio Ficino
+                    # opened the vellum" inside an "I" story) — perfect naming
+                    # score, broken continuity.
+                    if _CANON_FIX and _pn == "first person":
+                        _name_how = (f"let {plan.protagonist}'s NAME surface early — "
+                                     f"spoken by another, a signed or remembered line, "
+                                     f"or an “I, {plan.protagonist},” aside — with every "
+                                     f"sentence still the “I”'s own")
+                    elif _CANON_FIX and _pn == "second person":
+                        _name_how = (f"let {plan.protagonist}'s NAME surface early — "
+                                     f"in address (“You, {plan.protagonist}—”) or "
+                                     f"another's speech — with every sentence still "
+                                     f"spoken to “you”")
+                    else:
+                        _name_how = (f"Call {plan.protagonist} by NAME on the page "
+                                     f"— at least once, early — a viewpoint carried "
+                                     f"only by pronouns dissolves into nobody")
                     _jlines.append(
                         f"whose story: {plan.protagonist} — every page is theirs, seen "
                         f"through them alone ({_bind}). Even when a page's material is mostly "
                         f"about others or a place, it is {plan.protagonist} who arrives in it, "
                         f"witnesses it, and acts — the material's own figures are only what "
                         f"{plan.protagonist} meets there. Never switch to another figure's "
-                        f"eyes or a bystander's. Call {plan.protagonist} by NAME on the page "
-                        f"— at least once, early — a viewpoint carried only by pronouns "
-                        f"dissolves into nobody")
+                        f"eyes or a bystander's. {_name_how}")
             if plan.correspondents and self.form in _CAST_FORMS:
                 _cast_full = (plan.telling.split("|", 2) + ["", "", ""])[2]
                 _cb = _cast_directive(self.form, plan.correspondents, _cast_full)
@@ -3529,16 +4157,50 @@ class Renderer:
             # simply never happened). Named here, they are as real on every page as the
             # material's figures: the render may put them in any scene the plot needs.
             if plan.cast and self.form in _PLOT_ENACTED:
-                _jlines.append(f"the story's own people, as real in every scene as the "
-                               f"material's figures: {plan.cast}")
+                if _CAST_CARDS:
+                    # p27 — the cast entries are CARDS now (role · pronoun · want ·
+                    # bond) and the line holds them like the prot card: the same
+                    # person on page 12 as on page 1, whatever the material says.
+                    _jlines.append(f"the story's own people, each held to their whole "
+                                   f"card on every page — as real in every scene as the "
+                                   f"material's figures, and never re-cast by them: "
+                                   f"{plan.cast}")
+                else:
+                    _jlines.append(f"the story's own people, as real in every scene as the "
+                                   f"material's figures: {plan.cast}")
+            # p25 — THE PROTAGONIST CARD: the planner's compact identity card rides
+            # every page like an image model's character reference — the same
+            # face, bearing, and want on page 12 as on page 1. Staged-only until
+            # p27 (the single-pass prompt was held byte-stable through the p25
+            # referee; p26/p27 re-baselined the frame, so it rides everywhere now).
+            if (plan.prot_card and plan.protagonist
+                    and (self.staged or _CAST_CARDS)
+                    and self.form in _PLOT_ENACTED):
+                _jlines.append(f"who {plan.protagonist} is, held the same on every "
+                               f"page: {plan.prot_card}")
             # THE MOTIF — the page's emotional color, planner-assigned from the
             # path's small recurring palette (a leitmotif, not a per-page roll).
             # One motif, concept grain, shown never said: it colors the actions,
             # images, and pacing, but its NAME must not surface in the prose.
             if plan.mood and self.form in _PLOT_ENACTED:
+                # NAME only — the gloss half ("a string tightening") replicated
+                # VERBATIM as page imagery (p25 referee; the p16 corpus-blurb
+                # lesson again: examples replicate, so the defining image stays
+                # planner-side and the page gets the bare mood word)
+                _mname = plan.mood.split("—")[0].strip()
                 _jlines.append(f"this page's mood, coloring every action and image "
                                f"(felt in the scene, never named outright on the "
-                               f"page): {plan.mood}")
+                               f"page): {_mname}")
+            # p28 — REGISTER VARIETY (the #1 measured humanlikeness tell was
+            # figurative density: every feeling a bodily metaphor, every fact a
+            # simile — machine-even texture). Positive craft rule, never a ban:
+            # plain statement is a deliberate stroke; variety is the human hand.
+            if _FIG_VARIETY and self.form in _PLOT_ENACTED:
+                _jlines.append("the prose varies its registers like a living "
+                               "writer: an image where an image earns its place, "
+                               "plain saying elsewhere — a feeling named flat out, "
+                               "a fact given straight, can be the strongest line "
+                               "on the page; spend figures where they matter most")
             _did = plan.plot_kind == "didactic"
             if plan.plot:
                 _jlines.append(("promise: " if _did else "plot: ") + plan.plot)
@@ -3549,6 +4211,13 @@ class Renderer:
                 _jlines.append("the course: every page teaches toward the promise, "
                                "in one held register, to the last page — the "
                                "syllabus is the spine, never departed")
+            # p28 — THE INSTRUMENT: the lesson's running worked example, the
+            # didactic cast card. Develop the one thread; local illustrations may
+            # assist a step, but the course returns to and advances ITS example.
+            if _did and plan.instrument and _TUTOR_CARDS:
+                _jlines.append(f"the lesson's running instrument, returned to and "
+                               f"developed a step further on every page — never "
+                               f"swapped for a fresh example: {plan.instrument}")
             if plan.journey:
                 # THE JOURNEY LOG — what the pages ACTUALLY did (one line each).
                 # Strictly better than the outline's landed events: it holds the
@@ -3567,7 +4236,18 @@ class Renderer:
                     # inside (a spent voice stays spent; the fallout is the story)
                     _jlines.append(f"standing now, not undone: {plan.plot_state}")
             if plan.canon:
-                _jlines.append(f"established names (reuse, never rename): {plan.canon}")
+                if _CANON_FIX:
+                    # p26 — identity, not just existence: a figure keeps who the
+                    # story made them (the parenthesized role) unless this page's
+                    # own event changes them — vault material never re-casts them.
+                    _jlines.append(f"established names, each held to the identity "
+                                   f"the story gave them — reuse, never rename or "
+                                   f"re-role: {plan.canon}")
+                else:
+                    _jlines.append(f"established names (reuse, never rename): {plan.canon}")
+            # (p24: the spent-sayings WARNING line was removed — naming the exact
+            # words in the prompt primed their repetition (pink elephant; referee-
+            # proven). plan.spent now powers the FEED FILTER + the PAGE GATE.)
             # The same silent-context convention as the recap block (which has never
             # leaked): journey data is the water the page swims in, not content —
             # without this mark, pages narrate it ("the question that drives this
@@ -3689,11 +4369,15 @@ class Renderer:
                         _end = (" Whoever the protagonist faces here, let who or what they "
                                 "are come clear — never spring a stranger at the end." if _prot
                                 else "")
+                        _trust = (" The ending trusts the reader — the last lines land on "
+                                  "an image or an action, and what it all means is the "
+                                  "reader's to feel, never the narrator's to state."
+                                  if _CODA_FIX else "")
                         _verb = (f"Write the final scene, in which {_ev}.{_mark}{_end} This is "
                                  f"the ENDING: the story's central want is SETTLED here — won "
                                  f"or lost, for good — never deferred to one more door, relic, "
                                  f"or further quest. Bring one image from the journey's start "
-                                 f"back, changed, and stop.")
+                                 f"back, changed, and stop.{_trust}")
                     else:
                         _intro = (" Whoever or whatever the protagonist meets here, let who "
                                   "or what they are come clear as they enter — the reader is "
@@ -3756,6 +4440,11 @@ class Renderer:
                                  f"The material above is only the physical stage: what is solid and "
                                  f"true and nameable here. Draw on it for setting and props, but "
                                  f"never narrate the material's own account in place of the scene. "
+                                 f"If the material speaks in a named lecturer's or author's voice, "
+                                 f"that person is its SOURCE, not someone in this world — never "
+                                 f"cite or quote them; and render the material's aphorisms and "
+                                 f"formulas in the story's own words, never verbatim — a saying "
+                                 f"the story has already used is spent. "
                                  f"{_cov}Paraphrase rather than quote, {invent_page}.\n\n")
                 elif plan.plot_kind == "didactic":
                     # p18 — the didactic material contract. Tutorials were inheriting
@@ -3802,6 +4491,16 @@ class Renderer:
                     f"source — in service of this page's lesson. The material's facts "
                     f"stay canon. Never invent a scene or a character to carry the "
                     f"lesson: the READER is the only person on the page.")
+                # p28b — the Alice/Bob exception (user call "b"): the carded
+                # instrument may BE one example-person; that figure is licensed
+                # as a worked example. Everyone else stays banned (register drift).
+                if (_TUTOR_CARDS and plan.instrument
+                        and _INST_PERSON.search(plan.instrument)):
+                    dream_directive += (
+                        " One exception: the running instrument's example-figure is "
+                        "licensed besides the reader — work their case through as a "
+                        "worked example, never as a story: no scenes, no drama, the "
+                        "reader stays the one being taught.")
             elif plan.protagonist and plan.plot and self.form in _PLOT_ENACTED:
                 # THE WRITER'S JOB IS TO CONNECT. The spine is a DIVERSE walk on purpose —
                 # its value is throwing unrelated nodes together; if they already related
@@ -3900,7 +4599,7 @@ class Renderer:
             "\n\n— STYLE CHANNELS (independent axes; blend them) —\n"
             + "\n".join(channels) + arbitration + lang_clause
         )
-        user = (
+        user_core = (
             f"CONTEXT SO FAR (silent — never quote or mention it): "
             f"{recap or '(just beginning)'}\n\n"
             f"CONTINUE FROM (carry straight on from this — your first words begin AFTER its "
@@ -3911,10 +4610,8 @@ class Renderer:
             f"{steer_block}"
             f"{task_line}"
             f"{close_line}"
-            f"{_RULES}"
-            f"{dream_directive}"
-            f"{axes_block}"
         )
+        user = user_core + f"{_RULES}{dream_directive}{axes_block}"
         # Persona/style first (cache-friendly, static); reading level also seeded here
         # for context, but its binding copy is at the very end of the user message.
         level_block = (f"<reading_level>{self.level_directive}</reading_level>\n\n"
@@ -3929,27 +4626,415 @@ class Renderer:
         if _arc_pos == "last" and plan.gate_weight >= 2 and not _bridge:
             _n = int(_n * (1.15 if plan.gate_weight == 2 else 1.3))
         _n = int(_n * _LEVEL_WORDS.get(self.level, 1.0))   # a child's page is shorter
+        persona = _PERSONA.format(topic=self.topic or "this subject",
+                                  n=_n, shape=_shape)
         system = (f"<voice>\n{self.voice_directive}\n</voice>\n\n" + lang_block + level_block
-                  + _PERSONA.format(topic=self.topic or "this subject",
-                                    n=_n, shape=_shape))
-        # Mercury (diffusion) occasionally "starves" the answer and returns an empty
-        # completion — most often on the densest prompts (e.g. the scholar level). Retry
-        # once at a LOWER reasoning effort (what the empty-completion error advises) so a
-        # transient miss self-heals instead of surfacing as "[render failed]".
-        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)   # dream warms sampling too
+                  + persona)
+        return {"system": system, "user": user, "user_core": user_core,
+                "rules": _RULES, "dream": dream_directive, "axes": axes_block,
+                "persona": persona, "lang_block": lang_block,
+                "level_block": level_block, "n": _n}
+
+    # ------------------------------------------------------------------ p24
+    # THE PAGE GATE — detect-and-repair between render and serve. Pages are
+    # prefetched ahead of the reading cursor, so there is time to make a page
+    # honor its FORM CONTRACT before anyone sees it. Tier 0 = string splices
+    # (no model). Tier 1 = detector-certain flaws fed back as a short repair
+    # list to ONE refine-in-place call (spent-saying echoes, source-voice
+    # citations, future-tense register, a missing protagonist). Detectors are
+    # mechanical ports of the eval harness's L1 — the eval loop moved into the
+    # runtime. A rework that balloons or shrinks the page is rejected.
+    _GATE_LEGIT_DOUBLES = {"had", "that", "so", "very", "can", "do", "no"}
+    # the eval harness's slop lexicon (score_story SLOP), as detect-and-remove
+    # repair targets — post-hoc naming of a present token is the safe framing
+    # (naming them as PROHIBITIONS mid-prompt primes them; the pink-elephant law)
+    _GATE_SLOP = ("delve", "tapestry", "crucially", "it's worth noting",
+                  "it is worth noting", "stands as a testament", "testament to",
+                  "reminds us that", "tie together", "weave together",
+                  "underscores", "highlights the importance")
+    _GATE_CITE = re.compile(
+        r"\b([A-Z][a-z]{2,})(?:'s)?\s+(?:says|said|reminds|reminded|teaches|"
+        r"taught|writes|wrote|tells|told|lectures)\b")
+
+    def _detect_flaws(self, text: str, plan: "PagePlan") -> tuple[str, list[str]]:
+        """Tier 0 + Tier 1 mechanical detectors (the eval harness's L1, moved into
+        the runtime). Returns (text with string-level splices applied, repair notes).
+        Shared by the single-pass PAGE GATE and the staged pipeline's pass B."""
+        # Tier 0 — glitch doubles ("its its"), spliced without a model call
+        def _undouble(m):
+            w = m.group(1)
+            return w if w.lower() not in self._GATE_LEGIT_DOUBLES else m.group(0)
+        fixed = re.sub(r"\b([A-Za-z']+) \1\b", _undouble, text)
+        low = fixed.lower()
+        words = max(1, len(low.split()))
+        notes: list[str] = []
+        # spent-saying echo — the wording already used twice in this journey
+        for ph in (p.strip() for p in (plan.spent or "").split("·")):
+            if len(ph) > 20 and ph in low:
+                notes.append(f"the wording “{ph}” has already been used earlier "
+                             f"in this journey — say that idea in fresh words")
+        # prophecy register
+        if len(re.findall(r"\bwill [a-z]+", low)) / words > 0.02:
+            notes.append("the narration slips into future tense — retell in the "
+                         "page's own held tense")
+        # stock filler (the p25 referee: staged drafts carry no anti-slop, and
+        # the preservation-default polish left the tokens in — slop 2× single)
+        _slop_found = [t for t in self._GATE_SLOP if t in low][:2]
+        for t in _slop_found:
+            notes.append(f"the phrase “{t}” is stock filler — cut it or state "
+                         f"the point plainly")
+        # mood named outright (the motif contract says felt, never named —
+        # the p25 referee found leaks DOUBLING when style moved to pass C)
+        if plan.mood and self.form in _PLOT_ENACTED:
+            _mw = plan.mood.split("—")[0].strip().split()
+            _mfirst = (_mw[0].lower() if _mw else "")
+            if len(_mfirst) > 3 and re.search(rf"\b{re.escape(_mfirst)}", low):
+                notes.append(f"the page names its own mood outright (“{_mfirst}…”)"
+                             f" — cut or replace the naming; the mood is shown in "
+                             f"action and image, never stated")
+        # MORALIZING CODA (StoryScope's #1 render tell) — a story-form FINALE that
+        # ends by stating its theme. Story form only: a CASE closes on its
+        # principle by contract, and epistolary/chronicle end differently. The
+        # repair NEVER names the banned pattern's wording (pink-elephant) — it
+        # asks for the positive: end on the last concrete image or action.
+        if self.form == "story" and _CODA_FIX:
+            _m = re.match(r"(\d+) of (\d+)$", plan.arc or "")
+            _finale = (bool(_m) and int(_m.group(1)) >= int(_m.group(2))
+                       and plan.mode != "bridge")
+            if _finale and _moralizing_coda(fixed):
+                notes.append("the final lines step outside the story to sum up "
+                             "what it all means — end instead on the last concrete "
+                             "image or action, so the meaning stays in what happens, "
+                             "not in a closing statement about it")
+        # MID-STORY THEMATIC COMMENTARY (SIT_MET_303 — the coda fix's sibling,
+        # reaching the body not just the finale). Enacted forms; fires once per
+        # page on the first aside. Positive, pink-elephant-safe (never names the
+        # banned pattern): ask for the scene to carry the meaning.
+        if self.form in _PLOT_ENACTED and _ASIDE_FIX and _thematic_aside(fixed):
+            notes.append("one line pauses the scene to pronounce a general truth — "
+                         "keep the meaning inside this moment: let what "
+                         "{prot} does, or the image, carry it, with no summarizing "
+                         "statement about life or the world".replace(
+                             "{prot}", plan.protagonist.split()[0] if plan.protagonist
+                             else "someone"))
+        # source-voice citation (a named speaker who is not a person of the story)
+        if self.form in _PLOT_ENACTED:
+            _known = {plan.protagonist.split()[0].lower()} if plan.protagonist else set()
+            _known |= {c.strip().split()[0].lower()
+                       for c in (plan.cast or "").split(";") if c.strip()}
+            for m in self._GATE_CITE.finditer(fixed):
+                if m.group(1).lower() not in _known:
+                    notes.append(f"“{m.group(1)}” is cited as a speaker but is no "
+                                 f"one in this story — rework the line so the "
+                                 f"idea stands without citing them")
+                    break
+            # form contract: an enacted gate page must contain its protagonist
+            if (plan.mode in ("open", "move") and plan.protagonist
+                    and plan.protagonist.split()[0].lower() not in low
+                    and len(re.findall(r"\bI\b|\byou\b", fixed)) / words < 0.012):
+                _pers = (plan.telling.split("|", 2) + ["", ""])[1] if plan.telling else ""
+                if _CANON_FIX and _pers in ("first person", "second person"):
+                    # the repair must not push a person break (p26): the name
+                    # arrives inside the held voice, never as a third-person line
+                    notes.append(f"the viewpoint character {plan.protagonist} never "
+                                 f"appears — put them in the scene, acting, their name "
+                                 f"surfacing inside the story's own {_pers} voice")
+                else:
+                    notes.append(f"the viewpoint character {plan.protagonist} never "
+                                 f"appears — put them in the scene, by name, acting")
+        return fixed, notes
+
+    def _surgical_repair(self, text: str, notes: list[str]) -> str:
+        """ONE sentence-scoped repair call: rework ONLY the sentences the notes
+        name, in the set voice, everything else untouched. The p24 gate repaired
+        with a 3-line style-blind prompt and a one-word flaw (a stock token, a
+        named mood) triggered a whole-page low-effort rewrite that garbled prose
+        (MPH single-pass collapses, rounds 2–3). Shared by the single-pass gate
+        and the staged post-polish recheck. Returns `text` unchanged on failure
+        or a length-band violation."""
+        sysm = (f"<voice>\n{self.voice_directive}\n</voice>\n\n"
+                "You repair a finished page. Rework ONLY the sentences the "
+                "repairs name — every other sentence stays exactly as written, "
+                "word for word. Same events, same voice, same paragraphs, about "
+                "the same length. Output only the repaired page.")
+        usr = (f"<page>\n{text}\n</page>\n\n"
+               "REPAIRS — rework only the sentences these name:\n"
+               + "\n".join(f"- {n}" for n in notes)
+               + "\n\n" + _ANTI_SLOP
+               + "\n\nOutput only the repaired page, every unnamed sentence "
+                 "unchanged.")
+        try:
+            out, in_tok, out_tok = self._complete(sysm, usr, diffusing=False,
+                                                  effort="low")
+            self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                          model=self.model, is_sub_call=True)
+            out = _soften_line_breaks(out.strip())
+            if 0.7 <= len(out.split()) / max(1, len(text.split())) <= 1.3:
+                return out
+        except Exception:
+            pass
+        return text
+
+    def _gate_page(self, text: str, plan: "PagePlan") -> str:
+        if not plan.goal or text.startswith("[render failed"):
+            return text
+        fixed, notes = self._detect_flaws(text, plan)
+        if not notes:
+            return fixed
+        out = self._surgical_repair(fixed, notes[:4])
+        self.gate_log.append({"page": plan.node, "repairs": notes[:4],
+                              **({} if out != fixed else {"applied": False})})
+        return out
+
+    # ------------------------------------------------------------------ p25
+    # THE STAGED RENDER PIPELINE — the single overstuffed render prompt decomposed
+    # into a chain of focused passes, the text version of the architecture that won
+    # instruction-based IMAGE editing (Nano Banana Pro's reasoner-in-front; Flux
+    # Kontext's maskless in-context edits; GPT Image 2's preservation-by-default):
+    #   A DRAFT  — slim prompt: plot event + material + POV/cast (+ the protagonist
+    #              card) + the persona register floor. ONE job: the scene STAGED —
+    #              the protagonist acting, the beat landing. Style rules stay out.
+    #   B CHECK  — the mechanical detectors + ONE Mercury read of the draft against
+    #              a short per-form contract → named, surgical repairs or CLEAN
+    #              (semantic-mask style: quote the exact sentence, never a vague
+    #              quality goal). The critic never rewrites — role split.
+    #   C POLISH — refine-in-place: the repair list + the STYLE channels (voice /
+    #              level / anti-slop) moved here OUT of pass A. Wording only, never
+    #              events; preservation the default; the 0.7–1.3 length guard; the
+    #              `polish_strength` dial sets how far past the repairs it may go.
+    # The in-chain critic is a PRODUCTION mechanism; the offline cross-family judge
+    # (Haiku/Sonnet + gold labels + literary controls) remains the beacon that
+    # measures the whole pipeline end-to-end. _STAGED_V is hashed into staged
+    # pages' cache keys so a pipeline change retires their cached pages.
+    _STAGED_V = "s4"   # s4: post-polish RECHECK — detectors re-run on pass C's
+    #                    output; a dirty page gets one surgical sentence-scoped
+    #                    repair (the polish re-introduced mood words pass B had
+    #                    already flagged on the draft)
+    #                    s3: slop lexicon in the detectors (staged drafts carried
+    #                    no anti-slop and the conservative polish left tokens in)
+    #                    s2: price-as-cost-spent contract wording; tense anchored
+    #                    to the plan's telling (not the tail); POV check allows
+    #                    others acting in the protagonist's sight; polish keeps
+    #                    proper names; mood-leak detector added (referee findings)
+
+    def _render_staged(self, plan: "PagePlan", tail: str, recap: str,
+                       on_stream=None, diffusing: bool = False) -> str:
+        parts = self._prompt_parts(plan, tail, recap)
+        entry: dict = {"page": plan.node, "arc": plan.arc}
+        # ---- pass A: the DRAFT — scene first, style floor only
+        draft_system = parts["lang_block"] + parts["persona"]
+        draft_user = parts["user_core"] + parts["dream"] + "\n\nOutput only the page."
+        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)
+        t0 = time.perf_counter()
+        draft = ""
         last_exc: Exception | None = None
         for attempt in range(2):
             try:
                 self.cost_tracker.check_budget()
                 text, in_tok, out_tok = self._complete(
-                    system, user, on_stream=on_stream, diffusing=diffusing,
-                    effort=("low" if attempt else None), temperature=temp)
+                    draft_system, draft_user, on_stream=on_stream,
+                    diffusing=diffusing, effort=("low" if attempt else None),
+                    temperature=temp)
                 self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
                                               model=self.model, is_sub_call=True)
-                return _soften_line_breaks(_strip_tail_echo(text, tail))
+                # if the echo-strip eats the whole draft (page ≈ tail), keep the
+                # raw text — pass B/C can still repair it; empty means failure
+                draft = (_soften_line_breaks(_strip_tail_echo(text, tail))
+                         or _soften_line_breaks(text.strip()))
+                break
             except Exception as exc:
                 last_exc = exc
-        return f"[render failed: {last_exc}] {plan.material[:200]}"
+        if not draft:
+            return f"[render failed: {last_exc}] {plan.material[:200]}"
+        entry["t_draft"] = round(time.perf_counter() - t0, 2)
+        entry["draft_w"] = len(draft.split())
+        # ---- pass B: detectors + the contract check
+        t1 = time.perf_counter()
+        fixed, notes = self._detect_flaws(draft, plan)
+        notes = notes + self._contract_check(fixed, plan, tail)
+        entry["t_check"] = round(time.perf_counter() - t1, 2)
+        entry["repairs"] = notes[:6]
+        # ---- pass C: polish (repairs + the style channels), preservation-default
+        t2 = time.perf_counter()
+        out = self._polish(fixed, notes[:6], parts, tail,
+                           on_stream=on_stream, diffusing=diffusing)
+        entry["t_polish"] = round(time.perf_counter() - t2, 2)
+        entry["polished"] = out != fixed
+        # ---- recheck (s4): pass B checks the DRAFT, but the polish can
+        # re-introduce mechanical flaws (round 3: staged mood_leaks 2.0 vs the
+        # gate-scrubbed single's 0.0). Verify after edit — the image editors'
+        # iterate loop: one surgical, sentence-scoped pass when dirty.
+        out, notes2 = self._detect_flaws(out, plan)
+        if notes2:
+            out = self._surgical_repair(out, notes2[:4])
+            entry["recheck"] = notes2[:4]
+        entry["final_w"] = len(out.split())
+        self.stage_log.append(entry)
+        return out
+
+    def _contract_for(self, plan: "PagePlan", tail: str) -> list[str]:
+        """The short per-form contract pass B checks a draft against — the page's
+        OWN plan data phrased as verifiable checks (concept grain: no examples, no
+        forbidden-word lists — the pink-elephant law holds for the critic too)."""
+        checks: list[str] = []
+        if tail:
+            checks.append("the page opens by carrying straight on from the given "
+                          "earlier ending — no restart, no re-introduction, no recap")
+        _ev = plan.plot_event.rstrip(". ").strip()
+        _price = plan.plot_cost.rstrip(". ").strip()
+        _prot = plan.protagonist
+        _m = re.match(r"(\d+) of (\d+)$", plan.arc or "")
+        _last = bool(_m) and int(_m.group(1)) >= int(_m.group(2))
+        if self.form in _PLOT_ENACTED and plan.plot:
+            if plan.mode == "bridge":
+                checks.append("the page is motion between beats — the consequence "
+                              "of what just happened carried forward — never a "
+                              "recap of either side or of the journey's problem")
+            elif _ev:
+                checks.append(f"this page's event — “{_ev}” — happens ON the page "
+                              f"as a lived scene, moment to moment"
+                              + (f", {_prot} acting and the world answering"
+                                 if _prot else "")
+                              + " — not summarized, watched from a distance, or "
+                                "softened into agreement")
+                if _price:
+                    # framed as a COST being SPENT — a bare "holds: {price}" read
+                    # as content-to-assert and the critic enforced it inverted
+                    checks.append(f"the scene SPENDS this cost — something is "
+                                  f"lost or changed for good on the page: "
+                                  f"{_price}")
+            if _prot and plan.mode in ("open", "move"):
+                checks.append(f"{_prot} is named on the page, early, and the "
+                              f"scene stays in their viewpoint — others may act "
+                              f"and speak, but only as {_prot} sees them")
+            # tense/person anchor = the plan's COMMITTED telling (the tail can
+            # read ambiguously and the critic then flipped whole pages against
+            # the told-in contract — the cael past-tense repair)
+            _tn = (plan.telling.split("|", 2) + ["", ""])[:2]
+            _held = ", ".join(x for x in (_tn[0] and _tn[0] + " tense", _tn[1])
+                              if x)
+            checks.append("the narration holds "
+                          + (_held if _held else "one tense and person")
+                          + " throughout")
+            if _last:
+                checks.append("the ending SETTLES the story's central want for "
+                              "good — won or lost, nothing deferred")
+        elif plan.plot_kind == "didactic":
+            if plan.mode == "bridge":
+                checks.append("the page is a hand-off between lessons, spoken to "
+                              "the reader — no scene, no figures walking anywhere")
+            elif _ev:
+                checks.append(f"the page teaches this lesson, from the material's "
+                              f"own content, and does not leave it: “{_ev}”")
+                if _price:
+                    checks.append(f"by the end the reader can {_price}")
+            if (_TUTOR_CARDS and plan.instrument
+                    and _INST_PERSON.search(plan.instrument)):
+                checks.append("besides the reader, the only person is the running "
+                              "instrument's example-figure, treated as a worked "
+                              "example — no scenes, no story register")
+            else:
+                checks.append("the READER is the only person on the page — no scene, "
+                              "no characters, no story register")
+        else:
+            checks.append("the page retells the material faithfully — nothing "
+                          "asserted beyond what it holds")
+        return checks[:5]
+
+    def _contract_check(self, draft: str, plan: "PagePlan", tail: str) -> list[str]:
+        """Pass B — Mercury reads the draft against the contract and returns named,
+        surgical repairs ([] = clean). It only NAMES flaws; pass C makes the edits."""
+        checks = self._contract_for(plan, tail)
+        if not checks:
+            return []
+        sysm = ("You inspect one draft page of a serialized work against its "
+                "contract. Reply CLEAN when every check passes. Otherwise reply "
+                "with a numbered list of at most 4 repairs: each names its exact "
+                "target — quote the first words of the offending passage — and "
+                "states in one line what must change. Report only failures of the "
+                "contract's own checks; never style or word-choice preferences, "
+                "never new events, never a rewrite of the page.")
+        usr = ("<contract>\n" + "\n".join(f"- {c}" for c in checks)
+               + "\n</contract>\n\n"
+               + (f"The page continues from this earlier ending:\n\"{tail[-300:]}\"\n\n"
+                  if tail else "")
+               + f"<draft>\n{draft}\n</draft>\n\n"
+               + "Check the draft against the contract: reply CLEAN, or the "
+                 "numbered repairs.")
+        try:
+            self.cost_tracker.check_budget()
+            text, in_tok, out_tok = self._complete(sysm, usr, diffusing=False,
+                                                   effort="low", temperature=0.2)
+            self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                          model=self.model, is_sub_call=True)
+        except Exception:
+            return []                      # critic down → preservation default
+        t = text.strip()
+        if re.match(r"(?i)^\W*clean\b", t):
+            return []
+        notes = [m.group(1).strip() for m in
+                 re.finditer(r"^\s*(?:\d+[.)]|[-•])\s+(.+)$", t, re.M)]
+        return [n for n in notes if len(n) > 8][:4]
+
+    def _polish(self, draft: str, notes: list[str], parts: dict, tail: str,
+                on_stream=None, diffusing: bool = False) -> str:
+        """Pass C — refine-in-place: apply the named repairs, then bring the wording
+        to the style channels (voice / level / anti-slop) pass A never carried.
+        Wording only, never events; falls back to the draft on failure or a
+        length-band violation (preservation is the default, change the exception)."""
+        s = self.polish_strength
+        if s < 0.34:
+            strength = ("Beyond the listed repairs, change nothing unless a "
+                        "sentence plainly breaks the craft rules.")
+        elif s < 0.67:
+            strength = ("Beyond the listed repairs, re-tune wording only where it "
+                        "clearly falls short of the voice or the craft rules; "
+                        "leave every sentence that already serves.")
+        else:
+            strength = ("Re-voice the prose fully into the VOICE — any sentence "
+                        "may be reworded — while everything that happens stays "
+                        "exactly as drafted.")
+        sysm = (f"<voice>\n{self.voice_directive}\n</voice>\n\n"
+                + parts["lang_block"] + parts["level_block"]
+                + "You polish the finished draft of one page in place. Apply the "
+                  "repairs listed, then bring the wording to the VOICE and the "
+                  "craft rules. WORDING ONLY, never events: what happens on the "
+                  "page, its facts, names, images, and their order stay exactly "
+                  "as drafted — preservation is the default, change the "
+                  "exception. Keep every proper name where the draft uses one — "
+                  "never swap a name for a pronoun. Keep the paragraph breaks "
+                  "and about the same length. Output only the finished page.")
+        usr_base = ((f"The page continues from this earlier ending — its opening "
+                     f"must keep carrying on from it:\n\"{tail[-300:]}\"\n\n"
+                     if tail else "")
+                    + f"<draft>\n{draft}\n</draft>\n\n"
+                    + (("REPAIRS to apply, each surgically, in place:\n"
+                        + "\n".join(f"- {n}" for n in notes) + "\n\n")
+                       if notes else "No repairs — polish only.\n\n")
+                    + strength + "\n\n"
+                    + _ANTI_SLOP + "\n\n"
+                    + f"Keep the established voice — {self.voice_anchor}.\n"
+                    + "Output only the finished page: wording refined, events "
+                      "untouched.")
+        usr = usr_base
+        for attempt in range(2):
+            try:
+                self.cost_tracker.check_budget()
+                text, in_tok, out_tok = self._complete(
+                    sysm, usr, on_stream=on_stream, diffusing=diffusing,
+                    effort="low", temperature=0.5)
+                self.cost_tracker.record_call(input_tokens=in_tok, output_tokens=out_tok,
+                                              model=self.model, is_sub_call=True)
+                out = _soften_line_breaks(text.strip())
+                ratio = len(out.split()) / max(1, len(draft.split()))
+                if 0.7 <= ratio <= 1.3:
+                    return out
+                usr = usr_base + (f"\n\nYour previous attempt came back far "
+                                  f"{'longer' if ratio > 1.3 else 'shorter'} than "
+                                  f"the draft — keep the draft's length.")
+            except Exception:
+                pass
+        return draft                       # polish failed → serve the sound draft
 
     def digest_line(self, text: str) -> str:
         """One line of JOURNEY LOG — what a just-rendered path page actually did,

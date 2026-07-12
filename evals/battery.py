@@ -21,6 +21,22 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HIST = HERE / "history.jsonl"
 GEN_DEFAULT = HERE / "gen_path.py"
+# the humanlikeness fingerprint (StoryScope bridge) — an optional post-generation
+# pass, story-level by design (never per-page). Point DWELL_FINGERPRINT_SCRIPT at
+# your bridge's fingerprint.py (see storyscope_bridge/README.md); unset = skip.
+FINGERPRINT = Path(os.environ.get("DWELL_FINGERPRINT_SCRIPT", ""))
+
+
+def _fingerprint_pass(files: list) -> None:
+    files = [f for f in files if f and Path(f).exists()]
+    if not files:
+        return
+    if not os.environ.get("DWELL_FINGERPRINT_SCRIPT") or not FINGERPRINT.exists():
+        print("[fingerprint skipped: set DWELL_FINGERPRINT_SCRIPT to the bridge script]")
+        return
+    print(f"== fingerprint pass: {len(files)} stories -> humanlikeness.jsonl", flush=True)
+    subprocess.run([sys.executable, str(FINGERPRINT), *[str(f) for f in files]],
+                   check=False, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
 
 
 def load_vaults() -> dict[str, str]:
@@ -113,7 +129,7 @@ def _outname(vault: str, seed: int, dream: float, form: str, authored: bool) -> 
     return f"path_test_{vtag}gen_{seed}_d{dtag}{ftag}{'_auth' if authored else ''}.md"
 
 
-def run_cfg(cfg: tuple, judge: bool, gen_script: Path) -> None:
+def run_cfg(cfg: tuple, judge: bool, gen_script: Path):
     vkey, seed, dream, form = cfg[:4]
     extra = cfg[4] if len(cfg) > 4 else {}
     if vkey not in VAULTS:
@@ -132,8 +148,9 @@ def run_cfg(cfg: tuple, judge: bool, gen_script: Path) -> None:
                                        bool(extra.get("spine")))
     if out.exists():
         score(out, vault, judge, form)
-    else:
-        print(f"   !! missing {out.name}")
+        return HERE / "stories" / out.name
+    print(f"   !! missing {out.name}")
+    return None
 
 
 def sweep_plan(n: int, sweep_seed: int = 7) -> list[dict]:
@@ -164,6 +181,9 @@ def main() -> None:
     ap.add_argument("--slice", default="")
     ap.add_argument("--sweep-seed", type=int, default=7)
     ap.add_argument("--plan-only", action="store_true")
+    ap.add_argument("--fingerprint", action="store_true",
+                    help="post-pass: humanlikeness fingerprint on generated stories "
+                         "(needs DWELL_FINGERPRINT_SCRIPT)")
     a = ap.parse_args()
     gen = Path(a.gen)
     if a.sweep:
@@ -176,9 +196,13 @@ def main() -> None:
         if a.slice:
             lo, hi = (int(x) if x else d for x, d in
                       zip(a.slice.split(":"), (0, len(plan))))
+        made = []
         for k in range(lo, min(hi, len(plan))):
             c = plan[k]
-            run_cfg((c["vault"], c["seed"], c["dream"], c["form"]), a.judge, gen)
+            made.append(run_cfg((c["vault"], c["seed"], c["dream"], c["form"]),
+                                a.judge, gen))
+        if a.fingerprint:
+            _fingerprint_pass(made)
         trend()
         return
     if a.score_only:
@@ -187,8 +211,9 @@ def main() -> None:
             for f in sorted(_g.glob(pat)):
                 score(Path(f), "", a.judge)
     elif a.run:
-        for cfg in BATTERY:
-            run_cfg(cfg, a.judge, gen)
+        made = [run_cfg(cfg, a.judge, gen) for cfg in BATTERY]
+        if a.fingerprint:
+            _fingerprint_pass(made)
     trend()
 
 

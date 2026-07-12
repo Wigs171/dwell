@@ -1,22 +1,31 @@
 """gen_path.py — generate a scoreable path file (the eval harness's generator).
 
     GEN_VAULT=<path to a vault> [GEN_FORM=story|tutorial|...] \
-    [GEN_SPINE="node-id,node-id,..."] [GEN_GOAL="..."] \
+    [GEN_SPINE="node-id,node-id,..."] [GEN_GOAL="..."] [DWELL_STAGED=1] \
     python gen_path.py <seed>:<dream> [...]
 
-Walks a path (random spine, or an AUTHORED one via GEN_SPINE — the product
-shape for tutorials: an expert picks the nodes and states the training goal)
-and writes `path_test_<vault>gen_<seed>_d<dream>[_form][_auth].md` beside this
+Walks a path (random spine, or an AUTHORED one via GEN_SPINE) and writes
+`path_test_<vault>gen_<seed>_d<dream>[_form][_stg][_auth].md` beside this
 script, in the format score_story.py parses. Requires the render engine's API
 key configured as usual (.env).
+
+Reconstructed 2026-07-10: the original lived in a scratchpad (now gone). This
+is the open-source `dwell/evals/gen_path.py` re-homed onto the working
+`prototypes/dwell.py` engine, plus the p25 staged-arm tag (`_stg`) so the
+staged pipeline (DWELL_STAGED=1) produces distinctly-named files.
 """
 import io, os, random, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROTO = HERE.parent / "server"
-if not PROTO.exists():
-    PROTO = HERE.parent / "prototypes"
+# dwell.py may sit in a sibling `server/` (open-source layout) or directly in
+# the parent `prototypes/` (working layout). Prefer whichever actually holds it.
+for cand in (HERE.parent, HERE.parent / "server", HERE.parent / "prototypes"):
+    if (cand / "dwell.py").exists():
+        PROTO = cand
+        break
+else:
+    PROTO = HERE.parent
 sys.path.insert(0, str(PROTO))
 import dwell
 from dwell import Brain, PathNavigator, Renderer, plot_kind_for
@@ -28,6 +37,7 @@ VAULT = os.environ.get("GEN_VAULT", "")
 FORM = os.environ.get("GEN_FORM", "story")
 SPINE = [s.strip() for s in os.environ.get("GEN_SPINE", "").split(",") if s.strip()]
 GOAL = os.environ.get("GEN_GOAL", "")
+STAGED = os.environ.get("DWELL_STAGED", "") == "1"
 MAXP = 20
 if not VAULT:
     sys.exit("set GEN_VAULT to a vault directory")
@@ -70,10 +80,13 @@ def run(brain, seed, dream=0.5):
     r.set_dream(dream)
     nav.ensure_plot(mkc(r), kind=plot_kind_for(FORM), dream=dream)
     kinds = {g: brain.nodes[g].kind for g in spine}
-    L = [f"# pathgen seed={seed} — {FORM} dream={dream}",
+    L = [f"# pathgen seed={seed} — {FORM} dream={dream}"
+         + ("  [STAGED]" if STAGED else ""),
          f"PV: {dwell._PROMPT_V}", f"FORM: {FORM}",
+         f"STAGED: {1 if STAGED else 0}",
          f"PROTAGONIST: {nav.protagonist or '(none — factual tour)'}",
          f"CAST: {nav.plot_cast}",
+         f"INSTRUMENT: {getattr(nav, 'plot_instrument', '')}",
          "PALETTE: " + "; ".join(f"{n} — {g}" if g else n for n, g in nav.mood_palette),
          "spine: " + " -> ".join(f"{brain.nodes[g].title}[{kinds[g][:4]}]" for g in spine),
          "", "## THE PLOT", f"PREMISE: {nav.plot_premise}"]
@@ -109,10 +122,13 @@ def run(brain, seed, dream=0.5):
     L.append(f"\n---\npages={n} cost=${cost:.4f} complete={nav.complete}")
     dtag = str(dream).replace(".", "")
     ftag = "" if FORM == "story" else f"_{FORM}"
+    stag = "_stg" if STAGED else ""
     atag = "_auth" if SPINE else ""
-    out = OUT / f"path_test_{VTAG}gen_{seed}_d{dtag}{ftag}{atag}.md"
+    gtag = ("_" + os.environ["GEN_TAG"]) if os.environ.get("GEN_TAG") else ""
+    out = OUT / f"path_test_{VTAG}gen_{seed}_d{dtag}{ftag}{stag}{atag}{gtag}.md"
     io.open(out, "w", encoding="utf-8").write("\n".join(L))
-    print(f"[seed {seed} dream {dream}] {n} pages ${cost:.4f} -> {out.name}", flush=True)
+    print(f"[seed {seed} dream {dream}{' STAGED' if STAGED else ''}] "
+          f"{n} pages ${cost:.4f} -> {out.name}", flush=True)
 
 
 def main():

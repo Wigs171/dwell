@@ -9,7 +9,7 @@ Queues: All · Unlabeled · Disagreement (Haiku vs Sonnet gap) · Labeled.
 Stdlib only (http.server) — no deps, no build step.
 """
 from __future__ import annotations
-import json, re, time
+import json, re, statistics, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
@@ -18,6 +18,8 @@ HERE = Path(__file__).resolve().parent
 STORIES = HERE / "stories"
 HIST = HERE / "history.jsonl"
 LABELS = HERE / "labels.jsonl"
+HL = HERE / "humanlikeness.jsonl"          # the fingerprint point-graph data
+POLES = HERE / "hl_poles.json"             # precomputed human / frontier-AI poles
 PORT = 8092
 
 CRITERIA = {
@@ -216,9 +218,206 @@ def list_page(queue: str) -> str:
     return (f"<!doctype html><meta charset=utf-8><title>Dwell evals</title>"
             f"<style>{CSS}</style><div class=wrap><h1>Dwell eval reader "
             f"<span class=dim>· gold-set labeling · {len(metas)} shown · "
-            f"{n_lab} labeled</span></h1><p>{tabs}</p>"
+            f"{n_lab} labeled · <a href='/humanlikeness'>humanlikeness graph &rarr;</a>"
+            f"</span></h1><p>{tabs}</p>"
             f"<table><tr><th>story</th><th>pv</th><th>form</th><th>judge</th>"
             f"<th></th><th></th></tr>{rows}</table></div>")
+
+
+# ------------------------------------------------------------------ humanlikeness
+# The live point graph (dev dashboard, NOT the product UI). Reads
+# humanlikeness.jsonl (one row per fingerprinted story) + hl_poles.json (the
+# precomputed HUMAN and FRONTIER-AI reference poles). One pinned rater
+# (claude-haiku-4-5-20251001) makes points comparable; mid-range story-level
+# scores are rater-sensitive — the DISTRIBUTION is the signal, never a story grade.
+
+def load_hl() -> list[dict]:
+    rows = []
+    if HL.exists():
+        for l in HL.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(l)
+                if "P_human" in r:
+                    rows.append(r)
+            except Exception:
+                pass
+    return rows
+
+
+def _pv_key(pv: str):
+    # order engine versions: numeric core then any suffix (p19 < p25a < p25b)
+    m = re.match(r"p?(\d+)([a-z]*)", str(pv))
+    return (int(m.group(1)), m.group(2)) if m else (0, str(pv))
+
+
+def _mm(vals):
+    if not vals:
+        return None, None
+    return statistics.mean(vals), statistics.median(vals)
+
+
+def _beeswarm(xs, x0, x1, cy, r, half):
+    """Greedy column-bucket beeswarm: densest at the mode, clamped to the band.
+    Returns pixel (px, py) in the input order."""
+    colw = max(2 * r, 1.0)
+    cols: dict = {}
+    res = [None] * len(xs)
+    for i in sorted(range(len(xs)), key=lambda k: xs[k]):
+        px = x0 + max(0.0, min(1.0, xs[i])) * (x1 - x0)
+        col = round(px / colw)
+        c = cols.get(col, 0)
+        cols[col] = c + 1
+        step = ((c + 1) // 2) * (2 * r * 0.92)
+        py = cy + (0 if c == 0 else (step if c % 2 else -step))
+        py = max(cy - half + r, min(cy + half - r, py))
+        res[i] = (px, py)
+    return res
+
+
+_PV_RAMP = ["#4a5568", "#5b6b8c", "#6b8cae", "#5aa0a0", "#8aa04a", "#c0913f"]
+
+
+def humanlikeness_page() -> str:
+    rows = load_hl()
+    poles = {}
+    if POLES.exists():
+        try:
+            poles = json.loads(POLES.read_text(encoding="utf-8"))
+        except Exception:
+            poles = {}
+
+    # ---- per-PV stats + which PV is "current" (newest) --------------------
+    by_pv: dict = {}
+    for r in rows:
+        by_pv.setdefault(r.get("pv", "?"), []).append(r["P_human"])
+    pvs = sorted(by_pv, key=_pv_key)
+    cur_pv = pvs[-1] if pvs else None
+    prev_pv = pvs[-2] if len(pvs) > 1 else None
+    all_p = [r["P_human"] for r in rows]
+    o_mean, o_med = _mm(all_p)
+    c_mean, c_med = _mm(by_pv.get(cur_pv, []))
+    p_mean, _ = _mm(by_pv.get(prev_pv, [])) if prev_pv else (None, None)
+    trend = (c_mean - p_mean) if (c_mean is not None and p_mean is not None) else None
+
+    def fmt(v, d=3):
+        return f"{v:.{d}f}" if v is not None else "—"
+
+    trend_txt = ""
+    if trend is not None:
+        arrow = "▲" if trend > 0 else ("▼" if trend < 0 else "—")
+        cls = "good" if trend > 0 else ("bad" if trend < 0 else "dim")
+        trend_txt = (f"<span class={cls}>{arrow} {trend:+.3f}</span> "
+                     f"<span class=dim>vs {prev_pv}</span>")
+
+    # ---- geometry --------------------------------------------------------
+    W, x0, x1 = 1120, 150, 1080
+    lanes = [("HUMAN", 70, 60, poles.get("human", []), "#7fb069", 3, None),
+             (f"DWELL", 250, 150, None, None, 5, None),   # filled below
+             ("FRONTIER-AI", 470, 60, (poles.get("ai", []) + poles.get("controls", [])),
+              "#c94f4f", 3, None)]
+    Ht = 560
+    svg = [f"<svg viewBox='0 0 {W} {Ht}' width='100%' style='min-width:760px'>"]
+    # x grid + ticks
+    for t in (0, .25, .5, .75, 1.0):
+        gx = x0 + t * (x1 - x0)
+        svg.append(f"<line x1={gx:.0f} y1=40 x2={gx:.0f} y2=530 stroke='#2a2c36'/>")
+        svg.append(f"<text x={gx:.0f} y=548 fill='#8b8a83' font-size=12 "
+                   f"text-anchor=middle>{t:.2f}</text>")
+    svg.append("<text x=615 y=24 fill='#8b8a83' font-size=13 text-anchor=middle>"
+               "P(human) &mdash; joint-encoded, Haiku-rated</text>")
+
+    # human + frontier lanes (poles)
+    for label, cy, half, vals, color, rr, _ in lanes:
+        if vals is None:
+            continue
+        svg.append(f"<text x=20 y={cy+4} fill='#8b8a83' font-size=13>{label}</text>")
+        if vals:
+            m = statistics.mean(vals)
+            svg.append(f"<text x=20 y={cy+20} fill='#5c5b55' font-size=11>"
+                       f"n={len(vals)} &micro;={m:.2f}</text>")
+            for (px, py) in _beeswarm(vals, x0, x1, cy, rr, half):
+                svg.append(f"<circle cx={px:.1f} cy={py:.1f} r={rr} "
+                           f"fill='{color}' fill-opacity=0.55/>")
+
+    # DWELL lane — colored by PV era, newest highlighted
+    d_cy, d_half = 250, 150
+    svg.append(f"<text x=20 y={d_cy+4} fill='#e8e4da' font-size=13>DWELL</text>")
+    if all_p:
+        svg.append(f"<text x=20 y={d_cy+20} fill='#5c5b55' font-size=11>"
+                   f"n={len(all_p)} &micro;={o_mean:.2f}</text>")
+        pv_color = {pv: _PV_RAMP[min(i, len(_PV_RAMP) - 1)]
+                    for i, pv in enumerate(pvs)}
+        xs = [r["P_human"] for r in rows]
+        pos = _beeswarm(xs, x0, x1, d_cy, 5, d_half)
+        for r, (px, py) in zip(rows, pos):
+            newest = r.get("pv") == cur_pv
+            col = "#e8b04a" if newest else pv_color.get(r.get("pv"), "#6b7280")
+            rr = 6 if newest else 4.5
+            stroke = (";stroke:#e8e4da;stroke-width:1.2" if r.get("staged")
+                      else "")
+            svg.append(f"<circle cx={px:.1f} cy={py:.1f} r={rr} fill='{col}' "
+                       f"fill-opacity={0.95 if newest else 0.7} style='{stroke}'>"
+                       f"<title>{r.get('file','?')}  P={r['P_human']:.3f}  "
+                       f"{r.get('pv','?')}{'  staged' if r.get('staged') else ''}</title>"
+                       f"</circle>")
+        # mean / median reference lines for DWELL
+        for val, lab, dash in ((o_mean, "mean", "4 3"), (o_med, "median", "1 3")):
+            lx = x0 + val * (x1 - x0)
+            svg.append(f"<line x1={lx:.0f} y1={d_cy-d_half} x2={lx:.0f} "
+                       f"y2={d_cy+d_half} stroke='#d4a373' stroke-dasharray='{dash}' "
+                       f"stroke-opacity=0.7/>")
+            svg.append(f"<text x={lx:.0f} y={d_cy-d_half-4} fill='#d4a373' "
+                       f"font-size=10 text-anchor=middle>{lab} {val:.2f}</text>")
+    else:
+        svg.append(f"<text x=615 y={d_cy} fill='#8b8a83' font-size=14 "
+                   f"text-anchor=middle>no fingerprints yet — run "
+                   f"battery.py --fingerprint or fresh_corpus + fingerprint.py</text>")
+    svg.append("</svg>")
+
+    # ---- PV legend -------------------------------------------------------
+    legend = " ".join(
+        f"<span class=chip style='background:{('#e8b04a' if pv==cur_pv else _PV_RAMP[min(i,len(_PV_RAMP)-1)])};"
+        f"color:#181818'>{pv} · n={len(by_pv[pv])} · &micro;{statistics.mean(by_pv[pv]):.2f}</span>"
+        for i, pv in enumerate(pvs))
+
+    hdr = (f"<div class=tally>"
+           f"<div><span class=big>{len(rows)}</span><span class=lbl>stories fingerprinted</span></div>"
+           f"<div><span class=big>{fmt(o_mean)}</span><span class=lbl>mean P(human) · median {fmt(o_med)}</span></div>"
+           f"<div><span class=big>{fmt(c_mean)}</span><span class=lbl>{cur_pv or '—'} mean · median {fmt(c_med)} · n={len(by_pv.get(cur_pv,[]))}</span></div>"
+           f"<div><span class=big>{trend_txt or '—'}</span><span class=lbl>current-PV trend</span></div>"
+           f"</div>")
+
+    css2 = """
+    .tally{display:flex;gap:34px;flex-wrap:wrap;background:var(--panel);border-radius:10px;
+    padding:16px 22px;margin:14px 0 6px;font-family:ui-monospace,Consolas,monospace}
+    .tally .big{font-size:26px;display:block}.tally .lbl{font-size:11px;color:var(--dim)}
+    .good{color:var(--good)}.bad{color:var(--bad)}
+    .chip{display:inline-block;padding:2px 9px;border-radius:9px;font-size:11px;margin:2px;
+    font-family:ui-monospace,Consolas,monospace}
+    .plotwrap{background:var(--panel);border-radius:10px;padding:10px 6px;overflow-x:auto}
+    .note{color:var(--dim);font-size:12px;font-style:italic;margin:10px 2px}
+    """
+    poll = f"""<script>
+    let _m=0;
+    async function tick(){{try{{const r=await fetch('/hl_mtime');const j=await r.json();
+      if(_m&&j.mtime!==_m){{location.reload();}} _m=j.mtime;}}catch(e){{}}}}
+    setInterval(tick,4000);tick();
+    </script>"""
+    return (f"<!doctype html><meta charset=utf-8><title>Dwell humanlikeness</title>"
+            f"<style>{CSS}{css2}</style><div class=wrap>"
+            f"<h1>Dwell humanlikeness <span class=dim>· live fingerprint point graph "
+            f"· <a href='/'>&larr; eval reader</a></span></h1>"
+            f"{hdr}<div class=legend style='margin:2px 0 10px'>{legend}</div>"
+            f"<div class=plotwrap>{''.join(svg)}</div>"
+            f"<p class=note>Poles: HUMAN = {poles.get('n_human','?')} of their released "
+            f"human-class vectors (&micro;{fmt(poles.get('human_mean'),2)}); FRONTIER-AI = "
+            f"their AI vectors + our {poles.get('n_controls','?')} control extractions "
+            f"(&micro;{fmt(poles.get('ai_mean'),2)}) — both scored through the same "
+            f"joint-encode path. Newest PV highlighted gold; staged runs ringed. "
+            f"One pinned rater (claude-haiku-4-5-20251001). "
+            f"<b>Mid-range story-level scores are rater-sensitive — read the "
+            f"distribution, never a single story's grade.</b></p>"
+            f"</div>{poll}")
 
 
 class H(BaseHTTPRequestHandler):
@@ -234,6 +433,11 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        if self.path == "/hl_mtime":
+            mt = HL.stat().st_mtime if HL.exists() else 0
+            return self._send(json.dumps({"mtime": mt}), "application/json")
+        if self.path.startswith("/humanlikeness"):
+            return self._send(humanlikeness_page())
         if self.path.startswith("/story/"):
             name = unquote(self.path[len("/story/"):])
             if not (STORIES / name).exists() or "/" in name or "\\" in name:

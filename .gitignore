@@ -64,3 +64,6 @@ evals/vaults.local.json
 evals/path_test_*.md
 evals/sonnet_*.json
 evals/prompt_dump.txt
+evals/humanlikeness.jsonl
+evals/hl_poles.json
+evals/fresh_gen.log
