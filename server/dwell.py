@@ -714,6 +714,9 @@ class PagePlan:
     thread_last: str = ""     # PATH tween: the thread as it last visibly stood
                               # (T6a-v2 strand memory; journey-pattern: rides the
                               # prompt, EXCLUDED from key() — rolling memory)
+    terms_met: str = ""       # PATH page: concepts already INTRODUCED on earlier
+                              # pages (intro-v3 ledger; journey-pattern: rides
+                              # the prompt, EXCLUDED from key() — rolling memory)
     remeet: str = ""          # PATH tween: a figure/place from the walk's own past
                               # crossing this stretch again (T6b; else "")
     plot_via: str = ""        # PATH gate: what forces this page's event (T4; else "")
@@ -1186,6 +1189,13 @@ class PathNavigator(Navigator):
         # would capture the identity from the flip page, not the establishing one).
         self.canon_roles: dict[str, str] = {}
         self._pending_roles: dict[str, str] = {}
+        # TERMS-MET ledger (intro v3): concepts the story has already INTRODUCED
+        # (bolded first-mentions / glossed acronyms), so later pages carry them
+        # as known instead of re-introducing them (user read-test: re-glossing).
+        # Rolling memory — rides the frame, NEVER cache-keyed. Names never enter
+        # (canon's hold outranks; the two ledgers are disjoint by construction).
+        self.terms_met: list[str] = []
+        self._terms_met_keys: set = set()
         # OPENING VARIETY — the flip side of the sink: the sink keeps WHO/WHAT stable,
         # this keeps HOW each page ENTERS varied. Without it the sink's pinned figure
         # gets opened on every page ("Maren did X" ×N), which reads as the same idea
@@ -1556,6 +1566,41 @@ class PathNavigator(Navigator):
                     role = self._pending_roles.get(c) or _establishing_role(c, text)
                     if role:
                         self.canon_roles[c] = role
+        # TERMS-MET harvest (intro v3): what did this page INTRODUCE? A bolded
+        # phrase is the render's own introduction mark; an acronym counts once
+        # GLOSSED (the cold gate's exact criteria, so "met" == what that gate
+        # would pass). First-seen order, deduped case-insensitively.
+        if _INTRO_LEDGER:
+            _name_words = {w.lower() for c in self.canon for w in c.split()}
+            _name_words |= {w.lower() for w in (self.protagonist or "").split()}
+            _name_words |= {w.lower()
+                            for c in (self.plot_cast or "").split(";")
+                            for w in c.split("—")[0].split()}
+            _mets: list[str] = []
+            for b in re.findall(r"\*\*([^*\n]{3,40}?)\*\*", text):
+                b = b.strip().strip(".,;:—?!").replace(";", ",").strip()
+                if (len(b) < 4 or len(b.split()) > 4 or b.isdigit()
+                        or b.lower() in self._STOP_WORDS
+                        or b.split()[0].lower() in _name_words):
+                    continue
+                _mets.append(b)
+            for _ac in dict.fromkeys(re.findall(r"\b[A-Z]{2,5}s?\b", text)):
+                _base = _ac.rstrip("s")
+                if len(_base) < 2 or _base in ("I", "A", "OK", "TV", "II", "III"):
+                    continue
+                if _base.lower() in _name_words:
+                    continue
+                if re.search(rf"{_base}s?\s*\(", text) or \
+                   re.search(rf"\({{1}}[^)]*{_base}[^)]*\)", text) or \
+                   re.search(rf"{_base}s?\s*[—,]\s*(?:a|an|the|which|its)\b", text):
+                    _mets.append(_base)
+            for _t in _mets:
+                _k = _t.lower()
+                if _k not in self._terms_met_keys:
+                    self._terms_met_keys.add(_k)
+                    self.terms_met.append(_t)
+            if len(self.terms_met) > 14:        # the ride stays bounded; the
+                self.terms_met = self.terms_met[-14:]   # keys-set remembers all
         # capture only the opening's DOORWAY GRAMMAR (first 4 words — "You felt
         # the…"), not its content: quoting objects back into the prompt keeps them
         # hot (priming) and re-seeds the very motif the list exists to rotate out
@@ -2305,6 +2350,7 @@ class PathNavigator(Navigator):
             mood=self._mood_for(self.i),        # ...under the departing beat's color
             spent=" · ".join(self.spent_sayings),
             journey="; ".join(self.journey_log[-12:]),   # ...and the carry-forward context
+            terms_met="; ".join(self.terms_met),   # intro-v3 ledger (rolling)
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
                 e for e in self.plot_events[:self.i + 1] if e),
@@ -2390,6 +2436,7 @@ class PathNavigator(Navigator):
             mood=self._mood_for(self.i),
             spent=" · ".join(self.spent_sayings),
             journey="; ".join(self.journey_log[-12:]),
+            terms_met="; ".join(self.terms_met),   # intro-v3 ledger (rolling)
             plot=self.plot_premise,             # tweens: premise + landed events only —
             plot_done="; ".join(                # the NEXT event is the gate's to spring
                 e for e in self.plot_events[:self.i + 1] if e),
@@ -2436,6 +2483,7 @@ class PathNavigator(Navigator):
         plan.correspondents = self.correspondents_line   # epistolary letter-writers
         plan.avoid_openings = " / ".join(self.recent_openings)   # vary this page's entry
         plan.journey = "; ".join(self.journey_log[-12:])   # what pages ACTUALLY did
+        plan.terms_met = "; ".join(self.terms_met)   # intro-v3 ledger (rolling)
         plan.spent = " · ".join(self.spent_sayings)   # gate data (not prompted)
         plan.chunks = self._strip_spent(plan.chunks)  # ...and filtered from the feed
         plan.protagonist = self._page_protagonist()   # held viewpoint (never didactic)
@@ -2545,6 +2593,8 @@ class PathNavigator(Navigator):
             c.canon = list(self.canon)
             c.canon_roles = dict(self.canon_roles)
             c._pending_roles = dict(self._pending_roles)
+            c.terms_met = list(self.terms_met)
+            c._terms_met_keys = set(self._terms_met_keys)
             c.gates_cleared = list(self.gates_cleared)
             c._pool = list(self._pool)
             c.commit(copy.copy(plan))
@@ -3831,6 +3881,12 @@ _PROBE_T6B = os.environ.get("DWELL_PROBE_T6B", "") == "1"      # re-meet corrido
 # but none for CONCEPTS: material terms/acronyms are given data to the engine,
 # so the render stages them as known. This extends the same rule to terms.
 _INTRO_FIX = os.environ.get("DWELL_INTRO_FIX", "") == "1"
+# TERMS-MET ledger (intro v3 — the open user requirement: later pages must not
+# RE-introduce already-met concepts). The p26 canon-ledger pattern applied to
+# TERMS: harvest what each committed page INTRODUCED (a bolded first-mention /
+# a glossed acronym) into a met-set; ride the frame as data; the detector
+# inverts (flag a re-gloss of a met term). Frame ride needs DWELL_INTRO_FIX on.
+_INTRO_LEDGER = os.environ.get("DWELL_INTRO_LEDGER", "") == "1"
 _PROBE_SIG = "|".join(x for x in (
     ("g" if _PROBE_GRAIN else ""),
     (f"t{_PROBE_TEMP:+.2f}" if _PROBE_TEMP else ""),
@@ -3839,7 +3895,7 @@ _PROBE_SIG = "|".join(x for x in (
     (f"s={_PROBE_SCENE}" if _PROBE_SCENE else ""),
     ("via" if _PROBE_VIA else ""), ("thr" if _PROBE_THREAD else ""),
     ("t6a" if _PROBE_T6A else ""), ("t6b" if _PROBE_T6B else ""),
-    ("in" if _INTRO_FIX else "")) if x)
+    ("in" if _INTRO_FIX else ""), ("il" if _INTRO_LEDGER else "")) if x)
 # ---- THE HAND (Phase B, DWELL_HAND_PLAN.md) — one per-path authorial signature,
 # drawn from an ISOLATED rng stream and materialized as data. All five axes
 # earned their slot in the Phase-A traction battery (results table in the plan
@@ -4641,6 +4697,14 @@ class Renderer:
                                "on stays passing — never a roll-call of names or "
                                "editions; once a term is met, the idea does the "
                                "work, not the word repeated")
+                if _INTRO_LEDGER and plan.terms_met:
+                    # the contract's MEMORY (data beats directives): name what
+                    # is already introduced so later pages carry it as known.
+                    # Subordinate to the canon hold — names never appear here
+                    # (the ledgers are disjoint by construction).
+                    _jlines.append(f"already introduced on earlier pages, "
+                                   f"carried as known — never re-introduced or "
+                                   f"re-explained: {plan.terms_met}")
             if plan.canon:
                 if _CANON_FIX:
                     # p26 — identity, not just existence: a figure keeps who the
@@ -5149,7 +5213,8 @@ class Renderer:
         # page reads as word salad (user read-test). Name it for the repair.
         if _INTRO_FIX and self.form in _PLOT_ENACTED:
             _known_txt = " ".join((plan.journey or "", plan.plot_done or "",
-                                   plan.canon or "", plan.cast or "")).upper()
+                                   plan.canon or "", plan.cast or "",
+                                   plan.terms_met or "")).upper()
             from collections import Counter as _AcCtr
             _ac_counts = _AcCtr(re.findall(r"\b[A-Z]{2,5}s?\b", fixed))
             for _ac, _n in _ac_counts.items():
@@ -5170,6 +5235,24 @@ class Renderer:
                              f"of grounding in the scene the moment it enters, so "
                              f"it carries weight")
                 break
+        # RE-INTRODUCTION gate (DWELL_INTRO_LEDGER): the cold gate's INVERSE —
+        # a term the ledger says the reader has met arrives freshly introduced
+        # again (re-bolded, or an acronym re-expanded in parens). Conservative
+        # on purpose: those two marks only — an appositive is normal prose.
+        if _INTRO_LEDGER and self.form in _PLOT_ENACTED and plan.terms_met:
+            for _mt in (x.strip() for x in plan.terms_met.split(";")):
+                if len(_mt) < 3:
+                    continue
+                _esc = re.escape(_mt)
+                if re.search(rf"\*\*\s*(?:the |a |an )?{_esc}s?\s*\*\*", fixed,
+                             re.IGNORECASE) or \
+                   (_mt.isupper() and re.search(rf"\b{_esc}s?\s*\([^)]{{4,}}\)",
+                                                fixed)):
+                    notes.append(f"“{_mt}” was introduced on an earlier page — "
+                                 f"the reader carries it; use it plainly here, "
+                                 f"the idea doing the work, with no second "
+                                 f"introduction")
+                    break
         # GRAIN BLEED gate (review F8): an excerpt's wording surfacing verbatim
         # is the examples-replicate failure — name the phrase so the repair is
         # surgical (the spent-sayings pattern).

@@ -100,3 +100,49 @@ wider thread arm rides along in the next battery); the consistency-vs-
 humanlikeness tension (staged, cards) applies to ALL continuity machinery and
 only the hard-gate defends against it; server digest lag means any strand
 memory is one-page-behind by construction (design reads, never keys, on it).
+
+## INTRO v3 — THE RE-INTRODUCTION LEDGER (2026-07-13, built + probed)
+
+User requirement (read-test #2 follow-up): subsequent pages must not
+RE-INTRODUCE already-met concepts. The intro-v2 contract said "once met, the
+idea does the work" — a directive without data. v3 gives it the data: the p26
+canon-ledger pattern applied to TERMS, behind `DWELL_INTRO_LEDGER`.
+
+- **Harvest** (`observe_canon`): what each committed page INTRODUCED — a bolded
+  first-mention, or an acronym meeting the cold gate's exact gloss criteria
+  ("met" == what that gate would pass) — into a first-seen, case-deduped set.
+  Cast/canon names never enter: the ledgers are disjoint by construction
+  (hold-precedence resolved at harvest, not in the prompt).
+- **Ride**: `plan.terms_met` at all 3 plan sites — journey-pattern rolling
+  memory, EXCLUDED from key(), re-copied in peek_after. Frame line (inside the
+  intro contract): "already introduced on earlier pages, carried as known —
+  never re-introduced or re-explained: …".
+- **Detector INVERSE**: a re-bold or a parenthetical re-expansion of a met term
+  → surgical repair note; deliberately conservative (appositives are normal
+  prose; fires once/page). The cold-acronym gate now counts met terms as known.
+
+**Probe (3 same-seed pairs, artc, reading config ±ledger):**
+
+| metric | led0 (t6a2+intro2) | led1 (+ledger) |
+|---|---|---|
+| cross-page re-introductions | 28 | **7 (−75%)** |
+| worst per-story bold-hammering | 7×/7×/11× | 4×/3×/**1×** |
+| total introduction marks | 66 | 26 |
+| r7 judge mean | 91.0 | 90.7 (flat) |
+| frame leaks | 0 | 0 |
+
+Read-check (902 led1): "Significant Form" bolded+glossed ONCE at first entry,
+then used plainly throughout — including surviving being BOTH the typed thread
+and a met term (the thread hold and the ledger hold composed: the story keeps
+returning to the concept without ever re-glossing it). No avoidance stilt.
+Residual 7: the gate fires once/page and terms ledger only after commit, so
+multiple re-bolds on one later page can survive a single repair pass.
+Caveat: probe-sig changes planner cache keys, so arms are same-seed/same-spine
+but fresh plan draws — mechanical metric is within-story (robust); judge
+comparison is distributional. P(human) fingerprint: see humanlikeness.jsonl
+(via-lesson guard).
+Fingerprint verdict (n=3 pairs, direction not magnitude): P(human) HIGHER with
+the ledger on every pair — 0.004→0.481, 0.454→0.980, 0.860→0.996 (arm means
+0.44→0.82). No via-collapse; glossary re-marks ARE machine-tidy tells, and
+removing them reads human. VERDICT: SHIP-CANDIDATE — include DWELL_INTRO_LEDGER
+in the p30 bank-the-win referee bundle.
