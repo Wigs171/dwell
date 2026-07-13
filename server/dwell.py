@@ -711,6 +711,15 @@ class PagePlan:
     protagonist: str = ""     # PATH page (story): the ONE held viewpoint the whole journey follows
     cast: str = ""            # PATH page (story): the planner's named CAST — story-people canon on
                               # every page, groundable even where the material never mentions them
+    thread_last: str = ""     # PATH tween: the thread as it last visibly stood
+                              # (T6a-v2 strand memory; journey-pattern: rides the
+                              # prompt, EXCLUDED from key() — rolling memory)
+    remeet: str = ""          # PATH tween: a figure/place from the walk's own past
+                              # crossing this stretch again (T6b; else "")
+    plot_via: str = ""        # PATH gate: what forces this page's event (T4; else "")
+    thread: str = ""          # PATH page (story): the story's typed anchor (T5; else "")
+    hand: str = ""            # PATH page (story): this page's slice of THE HAND — the
+                              # per-path authorial signature (p29; else "")
     instrument: str = ""      # PATH page (didactic): the lesson's ONE running worked example,
                               # developed across pages, never swapped (p28; else "")
     prot_card: str = ""       # PATH page (story): the planner's PROTAGONIST CARD — appearance /
@@ -754,6 +763,11 @@ class PagePlan:
             raw += "|md" + hashlib.sha1(self.mood.encode()).hexdigest()[:6]
         if self.instrument:   # a lesson taught on a different running example too
             raw += "|in" + hashlib.sha1(self.instrument.encode()).hexdigest()[:6]
+        if self.plot_via or self.thread or self.remeet:   # thread-campaign frame data
+            raw += "|th" + hashlib.sha1((self.plot_via + "\x1f" + self.thread
+                                         + "\x1f" + self.remeet).encode()).hexdigest()[:6]
+        if self.hand:         # a page written by a different hand is a different page
+            raw += "|hd" + hashlib.sha1(self.hand.encode()).hexdigest()[:6]
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
@@ -1289,6 +1303,10 @@ class PathNavigator(Navigator):
         # outline, so without this log no page can reference an earlier page's
         # concrete content. Rides the <journey> block as silent context.
         self.journey_log: list[str] = []
+        self.hand_ordinal = 0             # monotonic page counter for THE HAND
+                                          # (journey_log is capped at 16 and
+                                          # server-thread-timed — unusable as an
+                                          # ordinal; review F3)
         # TIER 2 — committed intent: a one-line gist per gate, frozen at path start, so any
         # page can foreshadow later beats and pay off earlier seeds. Authored paths may
         # supply `intents`; otherwise derive them from each gate's summary.
@@ -1406,6 +1424,58 @@ class PathNavigator(Navigator):
     # "Archivist" incident) must not be pinned by the sink and told to recur.
     _CANON_META = {"Archivist", "Narrator", "Chronicler", "Scribe", "Author",
                    "Reader", "Editor", "Curator", "Recorder", "Storyteller"}
+
+    _STOP_WORDS = {"the", "that", "this", "with", "from", "into", "their",
+                   "there", "where", "when", "what", "have", "been", "were"}
+
+    def _thread_last(self) -> str:
+        """T6a-v2 STRAND MEMORY: the most recent journey-digest line that shows
+        the thread landing on a page (>=1 shared content-word). Read-only over
+        journey_log; NEVER cache-keyed (the journey/spent exclusion pattern).
+        Empty when no touch is visible — the lull line then stays SILENT
+        (silence over amnesia: touches only chain when the last one landed)."""
+        thread = getattr(self, "plot_thread", "") or ""
+        if not thread:
+            return ""
+        words = {w.lower() for w in re.findall(r"[A-Za-z']{4,}", thread)} - self._STOP_WORDS
+        if not words:
+            return ""
+        for line in reversed(self.journey_log):
+            lw = {w.lower() for w in re.findall(r"[A-Za-z']{4,}", line)}
+            if words & lw:
+                return line[:160]
+        return ""
+
+    def _remeet_pick(self) -> str:
+        """T6b-v2 — THE B-CHARACTER CROSSING. One cast member per story
+        (deterministic: spine-hash % cast size), re-met on eligible plain
+        corridors (every ~3rd, deterministic), at most twice per story; the
+        second crossing knows it is second STATELESSLY (count of prior eligible
+        corridor indices). B-story content = the p27 cast card's own want/bond
+        — a secondary character's arc, the human subplot. No recency scans, no
+        mutable state, no races: pure function of (spine, cast, _tween_k)."""
+        if not (_PROBE_T6B and getattr(self, "plot_premise", "")):
+            return ""
+        cast_entries = [c.strip() for c in (self.plot_cast or "").split(";") if c.strip()]
+        if not cast_entries:
+            return ""
+        h = int(hashlib.sha1(("remeet|" + "|".join(self.spine)).encode()).hexdigest()[:8], 16)
+        if (h ^ self._tween_k) % 3 != 0:
+            return ""
+        n_prior = sum(1 for k in range(self._tween_k) if (h ^ k) % 3 == 0)
+        if n_prior >= 2:
+            return ""
+        entry = cast_entries[h % len(cast_entries)]
+        name = entry.split("—")[0].strip()
+        m = re.search(r"wants?\s+([^·;]+)", entry)
+        want = m.group(1).strip() if m else ""
+        if n_prior == 0:
+            return (f"on this stretch, {name} crosses the path on business of "
+                    f"their own" + (f" — their want, {want}, still pulling them"
+                                    if want else ""))
+        return (f"on this stretch, {name} crosses the path again"
+                + (f" — {want} further along than when they last crossed"
+                   if want else ", changed by the miles between"))
 
     def _canon_line(self) -> str:
         """The sink as the render sees it. p26: names carry their established
@@ -1673,9 +1743,10 @@ class PathNavigator(Navigator):
                      "reader can now do. Gains STACK: each lesson stands on the "
                      "gains before it and may use them freely, and the final lesson "
                      "runs the whole promise end to end."
-                     + (" Name the INSTRUMENT first — the one running example the "
-                        "lessons keep returning to and develop as the gains stack, "
-                        "so the course is one thread, not a new setup per page."
+                     + (" Name the INSTRUMENT first — one running example the "
+                        "lessons can develop as the gains stack, so the course "
+                        "reads as one thread; a lesson the example cannot serve "
+                        "simply teaches without it."
                         if _TUTOR_CARDS else "") + " PAGES is how long the reader "
                      "should stay on this lesson: 1 for a quick move that lands in one "
                      "reading, 2 when it needs a worked example then practice, 3 for a "
@@ -1758,8 +1829,21 @@ class PathNavigator(Navigator):
                   "opposition, never a roster of names), drawn from the material — a plain "
                   "sentence about THIS story, never a description of the journey's shape or "
                   "the kinds of figures in it>\n"
-                  "1. <turn> || mood: <one palette word> || price: <the lasting change it leaves> || pages: <1-3>\n"
-                  "2. <turn> || mood: <one palette word> || price: <the lasting change it leaves> || pages: <1-3>\n"
+                  # T5 — THE THREAD: a typed anchor from the story's own nature
+                  # (user law: NEVER object-only — personal/abstract stories
+                  # thread on vows, wounds, people, places, open questions; and
+                  # "none" stays legal or the anchor itself becomes a tell).
+                  + ("THREAD: <the concrete thing this story keeps returning to, "
+                     "drawn from its own nature — an object, a vow or debt, a "
+                     "mark or wound, a person, a place, or an open question; "
+                     "\"none\" if it threads on voice alone>\n"
+                     if _PROBE_THREAD else "")
+                  + "1. <turn> || mood: <one palette word> || price: <the lasting change it leaves>"
+                  + (" || via: <what in the PREVIOUS turn forces this one>" if _PROBE_VIA else "")
+                  + " || pages: <1-3>\n"
+                  "2. <turn> || mood: <one palette word> || price: <the lasting change it leaves>"
+                  + (" || via: <the forcing link>" if _PROBE_VIA else "")
+                  + " || pages: <1-3>\n"
                   "(one numbered line per chapter, same count as the chapters given)")
         # THE MOOD PALETTE — a leitmotif contract, not a menu: the few motifs
         # recur (home stated → counter at the fall/climax → home returned,
@@ -1790,7 +1874,11 @@ class PathNavigator(Navigator):
                  "turns use their NAMES — never an unnamed figure a page cannot ground. "
                  + _moodline +
                  "Then write the PREMISE and "
-                 "one TURN per chapter, each staged from the protagonist's side. Shape the "
+                 "one TURN per chapter, each staged from the protagonist's side. "
+                 + ("Each turn's VIA names the specific outcome of the previous "
+                    "turn that forces this one — a chain, not a sequence; the "
+                    "first turn's via is the premise itself. " if _PROBE_VIA else "")
+                 + "Shape the "
                  "chapters as ONE STORY ARC, not a row of equal beats. In order: the FIRST "
                  "establishes — who the protagonist is, their world, and the want that drives "
                  "them (it sets things moving, it costs them little); the EARLY-MIDDLE "
@@ -1843,6 +1931,8 @@ class PathNavigator(Navigator):
         cast = ""
         card = ""
         instrument = ""
+        thread = ""
+        vias = [""] * len(self.spine)
         events = [""] * len(self.spine)
         costs = [""] * len(self.spine)
         weights = [1] * len(self.spine)
@@ -1868,6 +1958,12 @@ class PathNavigator(Navigator):
                 if c and c.lower() not in ("none", "n/a", "-"):
                     card = c[:300]
                 continue
+            m = re.match(r"(?i)thread\s*:\s*(.+)", line)
+            if m:
+                c = m.group(1).strip().strip("*").strip().strip('"')
+                if c and c.lower() not in ("none", "n/a", "-"):
+                    thread = c[:160]
+                continue
             m = re.match(r"(?i)instrument\s*:\s*(.+)", line)
             if m:
                 c = m.group(1).strip().strip("*").strip().strip('"')
@@ -1890,6 +1986,11 @@ class PathNavigator(Navigator):
                     if mp:
                         weights[k] = max(1, min(3, int(mp.group(1))))
                         body = (body[:mp.start()] + body[mp.end():]).strip()
+                    mv = re.search(r"\|\|\s*via\s*:\s*([^|]+?)\s*(?=\|\||$)", body, re.I)
+                    if mv:
+                        if 0 <= k < len(vias):
+                            vias[k] = mv.group(1).strip()[:140]
+                        body = (body[:mv.start()] + body[mv.end():]).strip()
                     mm = re.search(r"\|\|\s*mood\s*:\s*([^|]+?)\s*(?=\|\||$)", body, re.I)
                     if mm:
                         # canonicalize to a palette entry; an off-palette word is
@@ -1928,9 +2029,26 @@ class PathNavigator(Navigator):
         self.plot_events = events
         self.plot_costs = costs
         self.plot_weights = weights
+        if _PROBE_END_PAGES and kind == "narrative" and self.plot_weights:
+            # phase-A ending-budget probe: the finale turn's page budget is
+            # STAMPED (structure) — the successor to the failed prose lever
+            self.plot_weights[-1] = max(1, min(3, _PROBE_END_PAGES))
         self.plot_kind = kind
         if protagonist and kind == "narrative":   # the planner's pick beats the heuristic
             self.protagonist = protagonist
+        if kind == "narrative":
+            self.plot_vias = vias if _PROBE_VIA else [""] * len(vias)
+            self.plot_thread = thread if _PROBE_THREAD else ""
+        if (kind == "narrative" and _HAND
+                and getattr(self, "_plot_dream", 1.0) >= 0.34):
+            # THE HAND — drawn once the path is a plotted FICTION story. The
+            # gate is threefold (plan doc): narrative kind + enacted form
+            # (render-side) + dream >= 0.34 — a LOW-dream factual tour stays
+            # plain (review: it is kind=narrative too, so kind alone leaks).
+            self.hand_card = _draw_hand(self.spine)
+            if (self.hand_card.get("end_pages") and self.plot_weights
+                    and not _PROBE_END_PAGES):   # probes override the hand
+                self.plot_weights[-1] = self.hand_card["end_pages"]
         if kind == "narrative":                   # the story's own named people + moods
             self.plot_cast = cast
             self.plot_moods = moods
@@ -2001,6 +2119,7 @@ class PathNavigator(Navigator):
 
     def ensure_plot(self, complete, kind: str = "narrative",
                     dream: float = 0.5, plan_gate: bool = False, check=None) -> bool:
+        self._plot_dream = dream    # the hand's dream gate reads this (review F1)
         """Generate THE PLOT once, via `complete(sysmsg, usr) -> str` (the caller
         wraps its own LLM client — the navigator stays client-free). `dream` is the
         creativity dial at path start; it bands the narrative brief (factual tour /
@@ -2173,6 +2292,11 @@ class PathNavigator(Navigator):
             protagonist=self._page_protagonist(),   # the detour stays in their eyes
             cast=self.plot_cast,                # ...with the story's people still real
             instrument=self.plot_instrument,    # p28 didactic running example
+            hand=_hand_page(getattr(self, "hand_card", None) or {},
+                            getattr(self, "hand_ordinal", 0), "bridge"),
+            thread=(getattr(self, "plot_thread", "") or "") if _PROBE_T6A else "",
+            thread_last=self._thread_last() if _PROBE_T6A else "",
+            remeet="",   # waypoint tweens keep their encounter (no crossing)
             prot_card=self.prot_card,           # ...and the protagonist's card (p25)
             plot_kind=self.plot_kind,           # p24b — tweens never carried the kind,
                                                 # so didactic corridors kept the story-
@@ -2256,6 +2380,11 @@ class PathNavigator(Navigator):
             # tween page about "Joren", the protagonist absent).
             protagonist=self._page_protagonist(), cast=self.plot_cast,
             instrument=self.plot_instrument,
+            hand=_hand_page(getattr(self, "hand_card", None) or {},
+                            getattr(self, "hand_ordinal", 0), "bridge"),
+            thread=(getattr(self, "plot_thread", "") or "") if _PROBE_T6A else "",
+            thread_last=self._thread_last() if _PROBE_T6A else "",
+            remeet=self._remeet_pick(),
             prot_card=self.prot_card,
             plot_kind=self.plot_kind,           # p24b — see _plan_tween_waypoint
             mood=self._mood_for(self.i),
@@ -2315,6 +2444,9 @@ class PathNavigator(Navigator):
             plan.plot_kind = self.plot_kind
             plan.cast = self.plot_cast          # the story's people, canon on every page
             plan.instrument = self.plot_instrument   # p28 didactic running example
+            plan.thread = getattr(self, "plot_thread", "") or ""
+            plan.hand = _hand_page(getattr(self, "hand_card", None) or {},
+                                   getattr(self, "hand_ordinal", 0), plan.mode)
             plan.prot_card = self.prot_card     # ...and the protagonist's card (p25)
             plan.mood = self._mood_for(j)       # this beat's motif colors its pages
             # A DWELL page is a SECOND page on a gate the keyframe already staged — its
@@ -2328,6 +2460,8 @@ class PathNavigator(Navigator):
             plan.plot_state = "; ".join(c for c in self.plot_costs[:_done] if c)
             if _staged and j < len(self.plot_events):
                 plan.plot_event = self.plot_events[j]
+                if getattr(self, "plot_vias", None) and j < len(self.plot_vias):
+                    plan.plot_via = self.plot_vias[j]
                 if j < len(self.plot_costs):
                     plan.plot_cost = self.plot_costs[j]
         # Arriving at a gate, render only its FRONT half when its back half is spoken for:
@@ -2419,6 +2553,8 @@ class PathNavigator(Navigator):
             return None
 
     def commit(self, plan: "PagePlan") -> None:
+        self.hand_ordinal = getattr(self, "hand_ordinal", 0) + 1   # THE HAND's
+        # monotonic page counter (never journey_log length: capped + thread-timed)
         if plan.mode == "bridge":               # a TWEEN frame
             self._tween_k += 1
             if plan.waypoint:                   # a waypoint visit — the pool is untouched
@@ -2492,7 +2628,9 @@ or code."""
 # artifacts diffusion sometimes leaves (the garbled-sentence failure mode we saw).
 # Bumped whenever the render PROMPT is overhauled — folded into cache_key so the
 # persistent tween cache never replays pages written under a retired prompt style.
-_PROMPT_V = "p27"   # (p28/p28b features exist but BOTH default OFF after negative
+_PROMPT_V = "p29"   # THE HAND default ON (user call after Phase C: +0.150 P(human)
+#                     paired for -3.0 judge; DWELL_HAND=0 restores the p27 frame).
+#                   # (p28/p28b features exist but BOTH default OFF after negative
 #                     referees — the live frame is p27; opting a p28 flag on should
 #                     come with an explicit --pv tag in the harness.)
 #                   # p3 = didactic plot kind + journey log + example-on-first-beat-only;
@@ -3638,7 +3776,184 @@ _FIG_VARIETY = os.environ.get("DWELL_FIG_VARIETY", "0") == "1"
 # serves the promise — return when the lesson does"), or planner-side placement
 # (assign which lessons the instrument appears in, like moods). The p28b
 # Alice/Bob exception (user call) stays in the code for that redesign.
+# v2 REFEREE (2026-07-11, 4 tutorials, three-way off/v1/v2): the syllabus
+# subordination FIXED v1's crater (bio 95→78→97: promise/connected/progression
+# all restored) — the rule-collision diagnosis was right — but the aggregate is
+# flat (off 87.5 / v1 84.75 / v2 87.25; dota +6, artc/oned mildly down). Stays
+# OFF by protocol; v2 is the SAFE form, validated for a future didactic axis.
 _TUTOR_CARDS = os.environ.get("DWELL_TUTOR_CARDS", "0") == "1"
+# DWELL_GHOST_FIX=1 enables the ghost-name PREVENTION line (default OFF pending
+# referee) — the continuity ladder's next stratum: render-invented named figures
+# who appear once and reconcile with nothing (Oren Quill, Rhasta/Nevermore/Doom —
+# 2/4 of the p27 arm's remaining zeros). A detector was built FIRST and killed by
+# its own referee data: real ghosts are 2-mentions-across-the-story sparse, so a
+# per-page detector structurally cannot see them and can only false-positive on
+# legitimate material names (Deepworks) — an in-paint repair that fires only on
+# false positives is prose damage. The shape the data supports is PREVENTION at
+# the birth of the problem: a journey-frame line — a passing figure stays
+# unnamed; a name is a promise the story keeps.
+# REFEREE VERDICT (2026-07-11, 7 same-seed): NEUTRAL — L1 ghost_names Δ −0.29
+# (one story 2→0, most already 0), continuity flat, judge +1.4 (noise band).
+# Harmless but unproven on its target; stays OFF by protocol (no prompt cost
+# for unmeasured benefit). The deeper ghost problem (sparse unreconciled
+# figures) is plot-structural — a Hand-era cast/roster axis, not a frame line.
+_GHOST_FIX = os.environ.get("DWELL_GHOST_FIX", "0") == "1"
+# DWELL_DENOUEMENT=1 enables the finale swiftness lever (default OFF pending
+# referee) — PLT_MOR_007 "Post-Climax Denouement Length" is the #1 planner-level
+# humanlikeness tell on the fresh corpus (signed SHAP −0.81): AI stories wind
+# down long and tidy; humans end near the peak. A finale-task sibling of the
+# coda lever ("end while the moment is still warm").
+# REFEREE VERDICT (2026-07-11, 5 same-seed worst-PLT configs): FAILED —
+# PLT_MOR_007 reads "extended (multiple scenes/time-jumps of aftermath)" in
+# BOTH arms on all 5; the last page didn't even shorten (Δ words +8). The tell
+# is multi-PAGE structure (the plot's post-climax return movement), which a
+# finale-task sentence cannot reallocate. Third same-seed proof that prose
+# levers fail where structure decides. Successor = the Hand's ending-mode +
+# post-climax PAGE BUDGET stamped on the finale gate (DWELL_HAND_PLAN.md).
+_DENOUEMENT = os.environ.get("DWELL_DENOUEMENT", "0") == "1"
+
+# ---- PHASE-A TRACTION PROBES (DWELL_HAND_PLAN.md) — temporary, referee-only.
+# Each flips ONE Hand axis extreme-to-extreme via env; all default off. The
+# combined signature is hashed into the render cache key so a probe arm can
+# never reuse a differently-configured arm's cached pages.
+_PROBE_GRAIN = os.environ.get("DWELL_PROBE_GRAIN", "")        # path to excerpt file
+_PROBE_TEMP = float(os.environ.get("DWELL_PROBE_TEMP_OFFSET", "0") or 0)
+_PROBE_END_PAGES = int(os.environ.get("DWELL_PROBE_END_PAGES", "0") or 0)
+_PROBE_RATION = os.environ.get("DWELL_PROBE_RATION", "")      # "plain" | "max"
+_PROBE_SCENE = os.environ.get("DWELL_PROBE_SCENE", "")        # "spoken" | "interior"
+# THE THREAD probes (connectedness campaign — census in project memory):
+_PROBE_VIA = os.environ.get("DWELL_PROBE_VIA", "") == "1"       # T4 because-slots
+_PROBE_THREAD = os.environ.get("DWELL_PROBE_THREAD", "") == "1" # T5 typed anchor
+_PROBE_T6A = os.environ.get("DWELL_PROBE_T6A", "") == "1"      # thread on quiet pages
+_PROBE_T6B = os.environ.get("DWELL_PROBE_T6B", "") == "1"      # re-meet corridors
+# COLD-CONCEPT fix (user read-test: terms of art arrive as if pre-known —
+# "word salad"). The engine has first-meeting discipline for FIGURES (~4764)
+# but none for CONCEPTS: material terms/acronyms are given data to the engine,
+# so the render stages them as known. This extends the same rule to terms.
+_INTRO_FIX = os.environ.get("DWELL_INTRO_FIX", "") == "1"
+_PROBE_SIG = "|".join(x for x in (
+    ("g" if _PROBE_GRAIN else ""),
+    (f"t{_PROBE_TEMP:+.2f}" if _PROBE_TEMP else ""),
+    (f"e{_PROBE_END_PAGES}" if _PROBE_END_PAGES else ""),
+    (f"r={_PROBE_RATION}" if _PROBE_RATION else ""),
+    (f"s={_PROBE_SCENE}" if _PROBE_SCENE else ""),
+    ("via" if _PROBE_VIA else ""), ("thr" if _PROBE_THREAD else ""),
+    ("t6a" if _PROBE_T6A else ""), ("t6b" if _PROBE_T6B else ""),
+    ("in" if _INTRO_FIX else "")) if x)
+# ---- THE HAND (Phase B, DWELL_HAND_PLAN.md) — one per-path authorial signature,
+# drawn from an ISOLATED rng stream and materialized as data. All five axes
+# earned their slot in the Phase-A traction battery (results table in the plan
+# doc). Default OFF pending the Phase-C distribution referee. DWELL_HAND_AXES
+# masks axes for ablation: g=grain t=temp e=ending r=ration s=scene.
+# PHASE C VERDICT (2026-07-12, 20 same-seed pairs): P(human) 0.364->0.515
+# (+0.150 paired mean — the program's first measured humanlikeness gain) for a
+# judge cost of -3.0 mean; the 5 apparent craters were exonerated (every one a
+# continuity failure; continuity zeros ~50% in BOTH arms — the corpus's standing
+# lottery, not hand damage). USER CALL 2026-07-12: default ON as p29.
+_HAND = os.environ.get("DWELL_HAND", "1") != "0"
+_HAND_AXES = os.environ.get("DWELL_HAND_AXES", "gters")
+def _default_grain_file() -> str:
+    # dev layout: prototypes/evals/; repo layout: evals/ beside server/
+    here = Path(__file__).resolve().parent
+    for cand in (here / "evals" / "probe_grain.txt",
+                 here.parent / "evals" / "probe_grain.txt"):
+        if cand.exists():
+            return str(cand)
+    return str(here / "evals" / "probe_grain.txt")
+
+
+_HAND_GRAIN_FILE = os.environ.get("DWELL_HAND_GRAIN", _default_grain_file())
+_HAND_GRAINS: list = []
+if _HAND:
+    try:
+        _HAND_GRAINS = [x.strip() for x in
+                        Path(_HAND_GRAIN_FILE).read_text(encoding="utf-8")
+                        .split("\n\n---\n\n") if x.strip()]
+    except Exception:
+        _HAND_GRAINS = []
+
+
+def _draw_hand(spine: list) -> dict:
+    """The per-path authorial signature. Seeded from the SPINE (seed-stable and
+    referee-safe: same seed -> same spine -> same hand; an isolated stream,
+    never the navigator's shared rng, whose draw order is load-bearing).
+    Weights carry the Phase-A calibrations: plain-dominant ration (the 0.73
+    arm), temperature never hotter (the +0.10 crater), ending weighted toward
+    swift/unstamped (the direction map is still coarse)."""
+    h = int(hashlib.sha1(("hand|" + "|".join(spine)).encode()).hexdigest()[:12], 16)
+    rng = random.Random(h)
+    card = {}
+    if "r" in _HAND_AXES:
+        card["ration"] = rng.choices(["plain", "mostly_plain", "mixed"],
+                                     weights=[45, 35, 20])[0]
+    if "s" in _HAND_AXES:
+        card["scene"] = rng.choices(["spoken", "balanced", "interior"],
+                                    weights=[40, 40, 20])[0]
+    if "t" in _HAND_AXES:
+        card["temp"] = rng.choices([0.0, -0.05, -0.10], weights=[40, 35, 25])[0]
+    if "e" in _HAND_AXES:
+        card["end_pages"] = rng.choices([0, 1, 3], weights=[40, 40, 20])[0]
+    if "g" in _HAND_AXES and len(_HAND_GRAINS) >= 2:
+        card["grain"] = sorted(rng.sample(range(len(_HAND_GRAINS)), 2))
+    card["_rng"] = h
+    return card
+
+
+def _hand_page(card: dict, ordinal: int, mode: str) -> str:
+    """This page's slice of the hand: the compact string PagePlan carries (and
+    the cache key hashes). Per-page ration/scene assignments derive from the
+    card's stream xor the page ordinal — within-story variety by design
+    (register CONSISTENCY is itself a measured tell). Bridges carry grain and
+    temp only (a tween is too short for telling-slots)."""
+    if not card:
+        return ""
+    parts = []
+    if card.get("temp"):
+        parts.append("t%+.2f" % card["temp"])
+    if card.get("end_pages"):
+        parts.append("e%d" % card["end_pages"])
+    if "grain" in card:
+        parts.append("g" + ",".join(str(i) for i in card["grain"]))
+    if mode != "bridge":
+        pr = random.Random(card["_rng"] ^ (ordinal * 0x9E3779B1))
+        if "ration" in card:
+            frac = {"plain": 0.0, "mostly_plain": 0.33, "mixed": 0.5}[card["ration"]]
+            parts.append("r=" + ("image" if pr.random() < frac else "plain"))
+        if "scene" in card:
+            u = pr.random()
+            sc = {"spoken": ("spoken" if u < 0.4 else ""),
+                  "balanced": ("spoken" if u < 0.25 else
+                               ("interior" if u < 0.5 else "")),
+                  "interior": ("interior" if u < 0.4 else "")}[card["scene"]]
+            if sc:
+                parts.append("s=" + sc)
+    return "|".join(parts)
+
+
+def _hand_parts(hand: str) -> dict:
+    """Parse a PagePlan.hand string ("t-0.05|e1|g02|r=plain|s=spoken")."""
+    out = {}
+    for tok in (hand or "").split("|"):
+        if tok.startswith("t"):
+            try:
+                out["t"] = float(tok[1:])
+            except ValueError:
+                pass
+        elif tok.startswith("g"):
+            out["g"] = [int(x) for x in tok[1:].split(",") if x.strip().isdigit()]
+        elif tok.startswith("r="):
+            out["r"] = tok[2:]
+        elif tok.startswith("s="):
+            out["s"] = tok[2:]
+    return out
+
+
+_GRAIN_TEXT = ""
+if _PROBE_GRAIN:
+    try:
+        _GRAIN_TEXT = Path(_PROBE_GRAIN).read_text(encoding="utf-8").strip()
+    except Exception:
+        _GRAIN_TEXT = ""
 # p28b — does an instrument name an example-PERSON? (the Alice/Bob exception,
 # user call: one carded figure is licensed as a worked example in a tutorial)
 _INST_PERSON = re.compile(r"named [A-Z]|who|person|apprentice|student|"
@@ -3931,6 +4246,8 @@ class Renderer:
         _PROMPT_V busts the persistent cache when the render prompt itself is overhauled
         (v2 = the 2026-07 slim rewrite: positive craft rules + tail self-check)."""
         parts = [_PROMPT_V, self.voice_id]
+        if _PROBE_SIG:    # phase-A probes alter prompt/sampling — never share cache
+            parts.append("pb" + _PROBE_SIG)
         if self.staged:   # staged pages are a different pipeline's output — never
             parts.append( # let them share cached pages with single-pass renders
                 f"stg{self._STAGED_V}-{int(round(self.polish_strength * 10))}")
@@ -3974,7 +4291,7 @@ class Renderer:
         # completion — most often on the densest prompts (e.g. the scholar level). Retry
         # once at a LOWER reasoning effort (what the empty-completion error advises) so a
         # transient miss self-heals instead of surfacing as "[render failed]".
-        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)   # dream warms sampling too
+        temp = min(1.15, max(0.1, MERCURY_TEMPERATURE + self.dream * 0.30 + (_PROBE_TEMP or _hand_parts(plan.hand).get("t", 0.0))))   # dream warms sampling too
         last_exc: Exception | None = None
         for attempt in range(2):
             try:
@@ -4168,6 +4485,14 @@ class Renderer:
                 else:
                     _jlines.append(f"the story's own people, as real in every scene as the "
                                    f"material's figures: {plan.cast}")
+            # GHOST PREVENTION (DWELL_GHOST_FIX): render-furnished walk-ons keep
+            # getting names and vanishing (the judges' "introduced and never
+            # reconciled"). Positive rule at the birth of the problem.
+            if _GHOST_FIX and self.form in _PLOT_ENACTED:
+                _jlines.append("new people beyond these: a passing figure stays "
+                               "unnamed — a guard, an old smuggler — because a "
+                               "name is a promise the story keeps; name no one "
+                               "the story will not keep")
             # p25 — THE PROTAGONIST CARD: the planner's compact identity card rides
             # every page like an image model's character reference — the same
             # face, bearing, and want on page 12 as on page 1. Staged-only until
@@ -4191,6 +4516,36 @@ class Renderer:
                 _jlines.append(f"this page's mood, coloring every action and image "
                                f"(felt in the scene, never named outright on the "
                                f"page): {_mname}")
+            # phase-A slot-data probes: an ASSIGNED telling per page (data),
+            # vs the refuted free-choice exhortation — the probe decides which
+            # class the slot mechanism belongs to.
+            _hp = _hand_parts(plan.hand) if plan.hand else {}
+            if _hp.get("r") and not _PROBE_RATION and self.form in _PLOT_ENACTED:
+                # THE HAND's per-page telling assignment (Phase-A: assigned
+                # data moved the composite where free choice measurably failed)
+                _jlines.append("this page's telling: plain — facts, actions, and "
+                               "feelings stated straight, in their own words"
+                               if _hp["r"] == "plain" else
+                               "this page's telling: one placed image, spent where "
+                               "it matters most — everything else stated straight")
+            if _hp.get("s") and not _PROBE_SCENE and self.form in _PLOT_ENACTED:
+                _jlines.append("this page is carried by spoken exchange — the "
+                               "people talk, and the talk does the work"
+                               if _hp["s"] == "spoken" else
+                               "this page is carried from inside — thought and "
+                               "perception, little or no speech")
+            if _PROBE_RATION and self.form in _PLOT_ENACTED:
+                _jlines.append("this page's telling: plain — facts, actions, and "
+                               "feelings stated straight, in their own words"
+                               if _PROBE_RATION == "plain" else
+                               "this page's telling: one placed image, spent where "
+                               "it matters most — everything else stated straight")
+            if _PROBE_SCENE and self.form in _PLOT_ENACTED:
+                _jlines.append("this page is carried by spoken exchange — the "
+                               "people talk, and the talk does the work"
+                               if _PROBE_SCENE == "spoken" else
+                               "this page is carried from inside — thought and "
+                               "perception, little or no speech")
             # p28 — REGISTER VARIETY (the #1 measured humanlikeness tell was
             # figurative density: every feeling a bodily metaphor, every fact a
             # simile — machine-even texture). Positive craft rule, never a ban:
@@ -4215,9 +4570,14 @@ class Renderer:
             # didactic cast card. Develop the one thread; local illustrations may
             # assist a step, but the course returns to and advances ITS example.
             if _did and plan.instrument and _TUTOR_CARDS:
-                _jlines.append(f"the lesson's running instrument, returned to and "
-                               f"developed a step further on every page — never "
-                               f"swapped for a fresh example: {plan.instrument}")
+                # v2 (the p28 referee's lesson): the instrument SERVES the
+                # syllabus — v1's "on every page" hold fought the promise and
+                # promise lost (bio 95→78). Subordinated: develop it where the
+                # lesson can use it; the syllabus decides.
+                _jlines.append(f"the lesson's running example, developed further "
+                               f"wherever a lesson can use it — reach for it before "
+                               f"inventing a fresh example, but the promise always "
+                               f"leads: {plan.instrument}")
             if plan.journey:
                 # THE JOURNEY LOG — what the pages ACTUALLY did (one line each).
                 # Strictly better than the outline's landed events: it holds the
@@ -4235,6 +4595,52 @@ class Renderer:
                     # standing consequences — present-tense state every page lives
                     # inside (a spent voice stays spent; the fallout is the story)
                     _jlines.append(f"standing now, not undone: {plan.plot_state}")
+            # T4 — the causal chain as DATA: why THIS page happens now.
+            if plan.plot_via and self.form in _PLOT_ENACTED:
+                _jlines.append(f"why this happens now — the last turn's outcome "
+                               f"that forces this one: {plan.plot_via}")
+            # T5 — THE THREAD (typed anchor; v2-style subordinated hold: when a
+            # page touches it, it MOVES — never an every-page demand).
+            if plan.thread and self.form in _PLOT_ENACTED:
+                _steer_fresh = bool(plan.steer_text)   # T6c — the reader's channel
+                # outranks the strand: a freshly steered page carries no strand
+                # touch (deferred, not dropped — eligibility recurs next corridor)
+                if plan.mode == "bridge" or not plan.plot_event:
+                    if not _steer_fresh and plan.thread_last:
+                        # T6a-v2 — the touch CONTINUES a visible prior state
+                        # (strand memory as data); with no visible prior touch
+                        # the line stays silent — silence over amnesia
+                        _jlines.append(f"the story's thread, as it last stood — "
+                                       f"{plan.thread_last} — is carried along this "
+                                       f"stretch; it may be turned over, or left "
+                                       f"alone: {plan.thread}")
+                else:
+                    _jlines.append(f"the story's thread — the thing it keeps returning "
+                                   f"to; when a page touches it, it moves (gains weight, "
+                                   f"changes hands, comes closer to its answer): "
+                                   f"{plan.thread}")
+            if (plan.remeet and plan.mode == "bridge" and not plan.steer_text
+                    and self.form in _PLOT_ENACTED):
+                # T6b — someone/somewhere from the walk's own past crosses this
+                # stretch: membership by recurrence, the canonical human lull
+                _jlines.append(f"on this stretch, a familiar crossing — met earlier "
+                               f"on this journey, unchanged except by the time "
+                               f"passed: {plan.remeet}")
+            # COLD-CONCEPT contract (the figure first-meeting rule, extended to
+            # terms): the reader has read NOTHING but these pages — a term of
+            # art carries no weight until the page gives it some.
+            if _INTRO_FIX and self.form in _PLOT_ENACTED:
+                # SELECTIVE (user rule): explanation in proportion to narrative
+                # weight — introduce what the scene turns on; let passing
+                # references pass; after introduction the idea carries, not
+                # the repeated word (the read-test found term-hammering and
+                # reference roll-calls once blanket-introduction shipped).
+                _jlines.append("a term the scene turns on gets one concrete stroke "
+                               "of what it is, inside the action, the moment it "
+                               "first enters; a reference the story does not lean "
+                               "on stays passing — never a roll-call of names or "
+                               "editions; once a term is met, the idea does the "
+                               "work, not the word repeated")
             if plan.canon:
                 if _CANON_FIX:
                     # p26 — identity, not just existence: a figure keeps who the
@@ -4373,11 +4779,15 @@ class Renderer:
                                   "an image or an action, and what it all means is the "
                                   "reader's to feel, never the narrator's to state."
                                   if _CODA_FIX else "")
+                        _swift = (" End close to the peak: once the central want is settled, "
+                                  "a few lines of aftermath at most — end while the moment "
+                                  "is still warm, not after the dust has been swept."
+                                  if _DENOUEMENT else "")
                         _verb = (f"Write the final scene, in which {_ev}.{_mark}{_end} This is "
                                  f"the ENDING: the story's central want is SETTLED here — won "
                                  f"or lost, for good — never deferred to one more door, relic, "
                                  f"or further quest. Bring one image from the journey's start "
-                                 f"back, changed, and stop.{_trust}")
+                                 f"back, changed, and stop.{_trust}{_swift}")
                     else:
                         _intro = (" Whoever or whatever the protagonist meets here, let who "
                                   "or what they are come clear as they enter — the reader is "
@@ -4557,6 +4967,22 @@ class Renderer:
                 # re-state criteria the event already embodies (the Archivist lesson)
                 phase_note = "\n" + self.form_phases[_arc_pos]
         channels = [f"<voice>VOICE (hold this): {self.voice_anchor}</voice>"]
+        _hgrain = ""
+        if not _GRAIN_TEXT and plan.hand and self.form in _PLOT_ENACTED and plan.goal:
+            _gi = _hand_parts(plan.hand).get("g") or []
+            if _gi and _HAND_GRAINS:
+                _hgrain = "\n\n---\n\n".join(
+                    _HAND_GRAINS[i] for i in _gi if i < len(_HAND_GRAINS))
+        _grain_channel = ""
+        if (_GRAIN_TEXT or _hgrain) and self.form in _PLOT_ENACTED and plan.goal:
+            # phase-A GRAIN probe: human cloth as texture anchor — data, not
+            # instruction. Yields to the voice; never its subject/era/names.
+            _grain_channel = (
+                "<grain>THE GRAIN — passages from human hands. Beneath the voice, "
+                "match their sentence texture and rhythm — how much is stated "
+                "plainly, how sentences breathe — never their subject, era, "
+                "names, or wording:\n" + (_GRAIN_TEXT or _hgrain) + "</grain>")
+            channels.append(_grain_channel)
         if self.form_directive:
             if plan.mode == "bridge":
                 # A tween keeps the form's GRAMMAR but scaled to a short motion frame — the
@@ -4632,6 +5058,7 @@ class Renderer:
                   + persona)
         return {"system": system, "user": user, "user_core": user_core,
                 "rules": _RULES, "dream": dream_directive, "axes": axes_block,
+                "grain": ("\n\n" + _grain_channel if _grain_channel else ""),
                 "persona": persona, "lang_block": lang_block,
                 "level_block": level_block, "n": _n}
 
@@ -4717,7 +5144,43 @@ class Renderer:
                          "statement about life or the world".replace(
                              "{prot}", plan.protagonist.split()[0] if plan.protagonist
                              else "someone"))
-        # source-voice citation (a named speaker who is not a person of the story)
+        # COLD-ACRONYM gate (DWELL_INTRO_FIX): an all-caps term staged with no
+        # grounding — no expansion, no appositive — and not met on an earlier
+        # page reads as word salad (user read-test). Name it for the repair.
+        if _INTRO_FIX and self.form in _PLOT_ENACTED:
+            _known_txt = " ".join((plan.journey or "", plan.plot_done or "",
+                                   plan.canon or "", plan.cast or "")).upper()
+            from collections import Counter as _AcCtr
+            _ac_counts = _AcCtr(re.findall(r"\b[A-Z]{2,5}s?\b", fixed))
+            for _ac, _n in _ac_counts.items():
+                if _n < 2:
+                    continue          # a passing mention is allowed to pass (user rule)
+                _base = _ac.rstrip("s")
+                if len(_base) < 2 or _base in ("I", "A", "OK", "TV", "II", "III"):
+                    continue
+                if _base in _known_txt:
+                    continue                     # met earlier — carries weight now
+                # glossed on this page? expansion in parens, or an appositive
+                # right after any occurrence
+                if re.search(rf"{_base}s?\s*\(", fixed) or \
+                   re.search(rf"\({{1}}[^)]*{_base}[^)]*\)", fixed) or \
+                   re.search(rf"{_base}s?\s*[—,]\s*(?:a|an|the|which|its)\b", fixed):
+                    continue
+                notes.append(f"the term “{_ac}” arrives bare — give it one stroke "
+                             f"of grounding in the scene the moment it enters, so "
+                             f"it carries weight")
+                break
+        # GRAIN BLEED gate (review F8): an excerpt's wording surfacing verbatim
+        # is the examples-replicate failure — name the phrase so the repair is
+        # surgical (the spent-sayings pattern).
+        if (_HAND_GRAINS or _GRAIN_TEXT) and plan.hand or _GRAIN_TEXT:
+            ws = re.findall(r"[a-z']+", low)
+            grams = {" ".join(ws[k:k + 6]) for k in range(max(0, len(ws) - 5))}
+            hit = grams & self._grain_grams()
+            if hit:
+                notes.append(f"the wording “{sorted(hit)[0]}” is borrowed from a "
+                             f"reference passage — say it in this story's own words")
+                # source-voice citation (a named speaker who is not a person of the story)
         if self.form in _PLOT_ENACTED:
             _known = {plan.protagonist.split()[0].lower()} if plan.protagonist else set()
             _known |= {c.strip().split()[0].lower()
@@ -4743,6 +5206,18 @@ class Renderer:
                     notes.append(f"the viewpoint character {plan.protagonist} never "
                                  f"appears — put them in the scene, by name, acting")
         return fixed, notes
+
+    _GRAIN_GRAMS: set = set()
+
+    @classmethod
+    def _grain_grams(cls) -> set:
+        """6-grams of every loaded grain excerpt (lazy; the bleed gate's needle
+        set — the p16 examples-replicate law, made mechanical)."""
+        if not cls._GRAIN_GRAMS:
+            src = " ".join(_HAND_GRAINS) + " " + _GRAIN_TEXT
+            ws = re.findall(r"[a-z']+", src.lower())
+            cls._GRAIN_GRAMS = {" ".join(ws[k:k + 6]) for k in range(max(0, len(ws) - 5))}
+        return cls._GRAIN_GRAMS
 
     def _surgical_repair(self, text: str, notes: list[str]) -> str:
         """ONE sentence-scoped repair call: rework ONLY the sentences the notes
@@ -4823,8 +5298,9 @@ class Renderer:
         entry: dict = {"page": plan.node, "arc": plan.arc}
         # ---- pass A: the DRAFT — scene first, style floor only
         draft_system = parts["lang_block"] + parts["persona"]
-        draft_user = parts["user_core"] + parts["dream"] + "\n\nOutput only the page."
-        temp = min(1.15, MERCURY_TEMPERATURE + self.dream * 0.30)
+        draft_user = (parts["user_core"] + parts.get("grain", "")
+                      + parts["dream"] + "\n\nOutput only the page.")
+        temp = min(1.15, max(0.1, MERCURY_TEMPERATURE + self.dream * 0.30 + (_PROBE_TEMP or _hand_parts(plan.hand).get("t", 0.0))))
         t0 = time.perf_counter()
         draft = ""
         last_exc: Exception | None = None

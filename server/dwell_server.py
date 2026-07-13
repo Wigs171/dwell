@@ -1295,7 +1295,8 @@ def _produce_page(s: DwellSession, req: PageReq, emit) -> None:
                                   confluence=bool(pdata.get("confluence", True)),
                                   dwell_cap=int(pdata.get("dwell_cap", 0)),
                                   intents=pdata.get("intents"),
-                                  tween_density=int(pdata.get("tween_density", 3)))
+                                  tween_density=int(pdata.get("tween_density",
+                                      os.environ.get("DWELL_TWEEN_DENSITY", "3"))))
             s.path = {"id": pdata.get("id"), "title": pdata.get("title") or pdata.get("id"),
                       "goal": pdata.get("goal") or "", "gates": len(resolved),
                       "missing": missing}

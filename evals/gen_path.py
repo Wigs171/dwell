@@ -73,7 +73,8 @@ def run(brain, seed, dream=0.5):
         spine = SPINE
     else:
         spine = generate_spine(brain, random.Random(seed), length=5, temperature=0.6)
-    nav = PathNavigator(brain, spine, random.Random(seed), goal=GOAL, tween_density=2)
+    nav = PathNavigator(brain, spine, random.Random(seed), goal=GOAL,
+                        tween_density=int(os.environ.get("GEN_TWEEN_DENSITY", "2")))
     r = Renderer(brain.topic or VTAG, dry=False, voice=brain.voice_default or "clean",
                  vault_voices=brain.voice_profiles)
     r.set_form(FORM)
@@ -87,6 +88,8 @@ def run(brain, seed, dream=0.5):
          f"PROTAGONIST: {nav.protagonist or '(none — factual tour)'}",
          f"CAST: {nav.plot_cast}",
          f"INSTRUMENT: {getattr(nav, 'plot_instrument', '')}",
+         f"HAND: {getattr(nav, 'hand_card', '') or ''}",
+         f"THREAD: {getattr(nav, 'plot_thread', '') or ''}",
          "PALETTE: " + "; ".join(f"{n} — {g}" if g else n for n, g in nav.mood_palette),
          "spine: " + " -> ".join(f"{brain.nodes[g].title}[{kinds[g][:4]}]" for g in spine),
          "", "## THE PLOT", f"PREMISE: {nav.plot_premise}"]
